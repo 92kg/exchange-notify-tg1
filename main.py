@@ -1,0 +1,338 @@
+"""
+加密货币情绪监控系统 v3.0
+模块化、多交易所、多币种支持
+"""
+
+import yaml
+import time
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from exchanges import ExchangeFactory
+from database.manager import DatabaseManager
+from analyzers.sentiment import SentimentAnalyzer
+from analyzers.signal import SignalGenerator
+from notifiers.telegram import TelegramNotifier
+from utils.helpers import format_price, format_percentage
+
+class CryptoSentimentMonitor:
+    """加密货币情绪监控主类"""
+    
+    def __init__(self, config_file='config.yaml'):
+        """初始化系统"""
+        
+        # 加载配置
+        self.config = self._load_config(config_file)
+        
+        # 配置日志
+        self._setup_logging()
+        
+        # 初始化组件
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("="*60)
+        self.logger.info("加密货币情绪监控系统 v3.0 初始化中...")
+        self.logger.info("="*60)
+        
+        try:
+            # 交易所
+            self.exchange = ExchangeFactory.create(self.config['exchange'])
+            self.logger.info(f"✅ 交易所: {self.exchange.name.upper()}")
+            
+            # 数据库
+            self.db = DatabaseManager(self.config['runtime']['db_file'])
+            self.logger.info(f"✅ 数据库: {self.config['runtime']['db_file']}")
+            
+            # 分析器
+            self.sentiment_analyzer = SentimentAnalyzer(self.config, self.db)
+            self.signal_generator = SignalGenerator(self.config, self.db)
+            self.logger.info("✅ 分析器已加载")
+            
+            # 通知器
+            if self.config['telegram']['enabled']:
+                self.notifier = TelegramNotifier(
+                    self.config['telegram']['bot_token'],
+                    self.config['telegram']['chat_id']
+                )
+                # 测试连接
+                if self.notifier.test_connection():
+                    self.logger.info("✅ Telegram连接成功")
+                else:
+                    self.logger.warning("⚠️ Telegram连接失败")
+            else:
+                self.notifier = None
+                self.logger.info("ℹ️ Telegram通知已禁用")
+            
+            # 获取启用的币种
+            self.enabled_coins = [
+                coin['symbol'] for coin in self.config['coins']
+                if coin.get('enabled', True)
+            ]
+            self.logger.info(f"✅ 监控币种: {', '.join(self.enabled_coins)}")
+            
+            self.logger.info("="*60)
+            self.logger.info("系统初始化完成！")
+            self.logger.info("="*60)
+        
+        except Exception as e:
+            self.logger.error(f"❌ 初始化失败: {e}", exc_info=True)
+            raise
+    
+    def _load_config(self, config_file: str) -> dict:
+        """加载配置文件"""
+        config_path = Path(config_file)
+        
+        if not config_path.exists():
+            raise FileNotFoundError(f"配置文件不存在: {config_file}")
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    
+    def _setup_logging(self):
+        """配置日志系统"""
+        log_level = self.config['runtime'].get('log_level', 'INFO')
+        log_file = self.config['runtime'].get('log_file', 'monitor.log')
+        
+        logging.basicConfig(
+            level=getattr(logging, log_level),
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file, encoding='utf-8'),
+                logging.StreamHandler()
+            ]
+        )
+    
+    def collect_market_data(self) -> dict:
+        """收集市场数据"""
+        self.logger.info("")
+        self.logger.info("="*60)
+        self.logger.info(f"开始收集数据: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info("="*60)
+        
+        # 获取恐慌指数
+        fear_greed = self.sentiment_analyzer.get_fear_greed_index()
+        if fear_greed:
+            self.logger.info(f"恐慌指数: {fear_greed['value']} ({fear_greed['classification']})")
+        else:
+            self.logger.warning("⚠️ 无法获取恐慌指数")
+        
+        data = {
+            'timestamp': datetime.now(),
+            'fear_greed': fear_greed,
+            'coins': {}
+        }
+        
+        # 收集每个币种数据
+        for symbol in self.enabled_coins:
+            self.logger.info(f"收集 {symbol} 数据...")
+            
+            try:
+                price = self.exchange.get_spot_price(symbol)
+                funding = self.exchange.get_funding_rate(symbol)
+                longshort = self.exchange.get_longshort_ratio(symbol)
+                
+                data['coins'][symbol] = {
+                    'price': price,
+                    'funding_rate': funding,
+                    'longshort': longshort
+                }
+                
+                if price:
+                    self.logger.info(f"  价格: {format_price(price)}")
+                if funding is not None:
+                    self.logger.info(f"  资金费率: {format_percentage(funding)}")
+                if longshort:
+                    self.logger.info(f"  多空比: {longshort['ratio']}")
+                
+                time.sleep(0.5)  # 避免API限流
+            
+            except Exception as e:
+                self.logger.error(f"  ❌ 获取{symbol}数据失败: {e}")
+                data['coins'][symbol] = {
+                    'price': None,
+                    'funding_rate': None,
+                    'longshort': None
+                }
+        
+        # 保存到数据库
+        try:
+            self.db.save_market_data(data)
+            self.logger.info("✅ 数据已保存到数据库")
+        except Exception as e:
+            self.logger.error(f"❌ 保存数据失败: {e}")
+        
+        return data
+    
+    def analyze_and_signal(self):
+        """分析数据并生成信号"""
+        
+        # 收集数据
+        data = self.collect_market_data()
+        
+        # 生成信号
+        self.logger.info("")
+        self.logger.info("开始生成交易信号...")
+        
+        try:
+            signals = self.signal_generator.generate_signals(data)
+            
+            if signals:
+                self.logger.info(f"✅ 生成了 {len(signals)} 个信号")
+                
+                # 保存信号
+                for signal in signals:
+                    try:
+                        self.db.save_signal(signal, data)
+                        self.logger.info(
+                            f"  {signal['coin']} {signal['type']} "
+                            f"强度:{signal['strength']} "
+                            f"标签:{' '.join(signal['tags'])}"
+                        )
+                    except Exception as e:
+                        self.logger.error(f"保存信号失败: {e}")
+                
+                # 发送Telegram通知
+                if self.notifier:
+                    message = self._format_message(data, signals)
+                    if self.notifier.send(message):
+                        self.logger.info("✅ 已发送Telegram通知")
+                    else:
+                        self.logger.error("❌ Telegram通知发送失败")
+            else:
+                self.logger.info("ℹ️ 当前无交易信号")
+        
+        except Exception as e:
+            self.logger.error(f"❌ 信号生成失败: {e}", exc_info=True)
+        
+        self.logger.info("="*60)
+        
+        return data, signals
+    
+    def _format_message(self, data: dict, signals: list) -> str:
+        """格式化Telegram消息"""
+        
+        msg = f"<b>🚨 情绪警报 v3.0</b>\n"
+        msg += f"⏰ {data['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}\n"
+        msg += f"📡 交易所: {self.exchange.name.upper()}\n\n"
+        
+        # 信号详情
+        for signal in signals:
+            coin = signal['coin']
+            action = "📈 买入" if signal['type'] == 'BUY' else "📉 卖出"
+            
+            msg += f"<b>{action}信号 - {coin}</b>\n"
+            msg += f"强度: {signal['strength']}\n"
+            
+            # 当前价格
+            price = data['coins'][coin].get('price')
+            if price:
+                msg += f"价格: {format_price(price)}\n"
+            
+            msg += f"原因:\n"
+            for reason in signal['reasons']:
+                msg += f"  • {reason}\n"
+            
+            msg += f"标签: {' '.join(signal['tags'])}\n\n"
+        
+        # 市场概况
+        if data.get('fear_greed'):
+            fg = data['fear_greed']
+            msg += f"<b>📊 市场概况</b>\n"
+            msg += f"恐慌指数: {fg['value']} ({fg['classification']})\n\n"
+        
+        # 所有币种价格
+        msg += f"<b>💰 币种价格</b>\n"
+        for symbol, coin_data in data['coins'].items():
+            price = coin_data.get('price')
+            if price:
+                msg += f"{symbol}: {format_price(price)}\n"
+        
+        return msg
+    
+    def run(self):
+        """运行监控循环"""
+        
+        interval = self.config['runtime']['check_interval']
+        
+        # 发送启动消息
+        start_msg = (
+            f"🤖 <b>情绪监控系统 v3.0 启动</b>\n\n"
+            f"📡 交易所: {self.exchange.name.upper()}\n"
+            f"💰 监控币种: {', '.join(self.enabled_coins)}\n"
+            f"⏱ 检查间隔: {interval//60}分钟\n"
+            f"⏰ 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        if self.notifier:
+            self.notifier.send(start_msg)
+        
+        self.logger.info(start_msg.replace('<b>', '').replace('</b>', ''))
+        
+        # 主循环
+        while True:
+            try:
+                # 分析并生成信号
+                self.analyze_and_signal()
+                
+                # 等待下次检查
+                self.logger.info(f"\n⏳ 等待 {interval//60} 分钟后下次检查...\n")
+                time.sleep(interval)
+            
+            except KeyboardInterrupt:
+                self.logger.info("\n✋ 收到停止信号")
+                if self.notifier:
+                    self.notifier.send("🛑 <b>监控系统已停止</b>")
+                self.db.close()
+                self.logger.info("👋 系统已关闭")
+                break
+            
+            except Exception as e:
+                self.logger.error(f"❌ 运行错误: {e}", exc_info=True)
+                if self.notifier:
+                    self.notifier.send(f"⚠️ <b>系统错误</b>\n<code>{str(e)}</code>")
+                
+                # 出错后等待5分钟再重试
+                self.logger.info("等待5分钟后重试...")
+                time.sleep(300)
+
+
+def main():
+    """主函数"""
+    
+    print("""
+    ╔════════════════════════════════════════════════════╗
+    ║   加密货币情绪监控系统 v3.0                        ║
+    ║   Crypto Sentiment Monitor                         ║
+    ╚════════════════════════════════════════════════════╝
+    
+    核心特性：
+    ✓ 多交易所支持 (OKX / Binance)
+    ✓ 灵活币种配置 (BTC/ETH/山寨币)
+    ✓ 情绪拐点确认
+    ✓ 资金费率分位数
+    ✓ 信号共振检测
+    ✓ Telegram实时推送
+    ✓ SQLite3持久化
+    ✓ 模块化架构
+    
+    作者: Claude
+    版本: 3.0.0
+    日期: 2025-02-02
+    """)
+    
+    try:
+        monitor = CryptoSentimentMonitor('config.yaml')
+        monitor.run()
+    
+    except FileNotFoundError as e:
+        print(f"\n❌ 错误: {e}")
+        print("请确保config.yaml文件存在于当前目录")
+    
+    except Exception as e:
+        print(f"\n❌ 启动失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()

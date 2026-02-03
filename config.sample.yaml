@@ -1,0 +1,74 @@
+# ============================================================
+# 加密货币情绪监控系统 v3.0 配置文件
+# ============================================================
+
+# 交易所配置
+exchange:
+  name: "okx"  # 可选: okx, binance
+  api_key: ""  # 如果需要认证功能（目前不需要）
+  api_secret: ""
+  api_passphrase: ""  # OKX需要
+
+# 监控币种配置
+coins:
+  - symbol: "BTC"
+    enabled: true
+    weight: 0.6  # 共振分析权重
+  
+  - symbol: "ETH"
+    enabled: true
+    weight: 0.4
+  
+  # 山寨币示例（默认禁用）
+  - symbol: "SOL"
+    enabled: false
+    weight: 0.3
+  
+  - symbol: "AVAX"
+    enabled: false
+    weight: 0.2
+  
+  - symbol: "MATIC"
+    enabled: false
+    weight: 0.2
+
+# 信号阈值配置
+thresholds:
+  fear_buy: 25              # 恐慌买入阈值
+  greed_sell: 75            # 贪婪卖出阈值
+  funding_panic_percentile: 15   # 资金费率恐慌分位数
+  funding_greed_percentile: 85   # 资金费率贪婪分位数
+  longshort_extreme: 0.8    # 多空比极端值
+
+# 拐点确认配置
+reversal:
+  enabled: true
+  consecutive_periods: 2    # 需要连续几次反转
+
+# 共振配置
+resonance:
+  enabled: true
+  min_coins: 2              # 至少几个币种共振
+
+# Telegram配置
+telegram:
+  bot_token: "1"
+  chat_id: "1"
+  enabled: true
+
+# Glassnode配置（可选链上数据）
+glassnode:
+  api_key: ""
+  enabled: false
+
+# 运行配置
+runtime:
+  check_interval: 3600      # 检查间隔（秒）
+  db_file: "crypto_sentiment_v3.db"
+  log_file: "monitor.log"
+  log_level: "INFO"         # DEBUG, INFO, WARNING, ERROR
+
+# 回测配置
+backtest:
+  profit_days: [7, 14, 30]
+  historical_days: 365

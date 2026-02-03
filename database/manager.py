@@ -1,0 +1,250 @@
+"""
+数据库管理器
+使用SQLite3存储历史数据和信号
+"""
+
+import sqlite3
+import json
+from datetime import datetime
+from typing import Dict, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DatabaseManager:
+    """数据库管理器"""
+    
+    def __init__(self, db_file='crypto_sentiment_v3.db'):
+        self.db_file = db_file
+        self.conn = None
+        self.init_database()
+    
+    def get_connection(self):
+        """获取数据库连接"""
+        if self.conn is None:
+            self.conn = sqlite3.connect(self.db_file)
+            self.conn.row_factory = sqlite3.Row
+        return self.conn
+    
+    def init_database(self):
+        """初始化数据库表结构"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # 市场数据表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS market_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                fear_greed_index INTEGER,
+                coins_data TEXT  -- JSON格式存储所有币种数据
+            )
+        ''')
+        
+        # 信号表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                coin_symbol TEXT,
+                signal_type TEXT,  -- BUY or SELL
+                strength TEXT,
+                price_at_signal REAL,
+                fear_greed_at_signal INTEGER,
+                reasons TEXT,  -- JSON
+                tags TEXT,     -- JSON
+                
+                -- 回测字段
+                price_7d REAL,
+                price_14d REAL,
+                price_30d REAL,
+                return_7d REAL,
+                return_14d REAL,
+                return_30d REAL,
+                is_successful BOOLEAN
+            )
+        ''')
+        
+        # 创建索引
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_market_timestamp 
+            ON market_data(timestamp)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signal_timestamp 
+            ON signals(timestamp)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signal_coin 
+            ON signals(coin_symbol)
+        ''')
+        
+        conn.commit()
+        logger.info("数据库初始化完成")
+    
+    def save_market_data(self, data: dict):
+        """
+        保存市场数据
+        :param data: 包含fear_greed和coins的字典
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 序列化币种数据为JSON
+            coins_json = json.dumps(data.get('coins', {}))
+            
+            cursor.execute('''
+                INSERT INTO market_data (fear_greed_index, coins_data)
+                VALUES (?, ?)
+            ''', (
+                data['fear_greed']['value'] if data.get('fear_greed') else None,
+                coins_json
+            ))
+            
+            conn.commit()
+            logger.debug("市场数据已保存")
+        
+        except Exception as e:
+            logger.error(f"保存市场数据失败: {e}")
+            conn.rollback()
+    
+    def save_signal(self, signal: dict, data: dict):
+        """
+        保存交易信号
+        :param signal: 信号字典
+        :param data: 当前市场数据
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            coin_symbol = signal['coin']
+            coin_data = data['coins'].get(coin_symbol, {})
+            price = coin_data.get('price')
+            
+            cursor.execute('''
+                INSERT INTO signals (
+                    coin_symbol, signal_type, strength,
+                    price_at_signal, fear_greed_at_signal,
+                    reasons, tags
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                coin_symbol,
+                signal['type'],
+                signal['strength'],
+                price,
+                data['fear_greed']['value'] if data.get('fear_greed') else None,
+                json.dumps(signal['reasons']),
+                json.dumps(signal['tags'])
+            ))
+            
+            conn.commit()
+            logger.info(f"信号已保存: {coin_symbol} {signal['type']}")
+        
+        except Exception as e:
+            logger.error(f"保存信号失败: {e}")
+            conn.rollback()
+    
+    def get_fear_greed_history(self, hours: int = 72) -> List[int]:
+        """
+        获取恐慌指数历史
+        :param hours: 获取最近N小时的数据
+        :return: 恐慌指数列表
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(f'''
+                SELECT fear_greed_index FROM market_data
+                WHERE fear_greed_index IS NOT NULL
+                AND timestamp >= datetime('now', '-{hours} hours')
+                ORDER BY timestamp
+            ''')
+            
+            return [row[0] for row in cursor.fetchall()]
+        
+        except Exception as e:
+            logger.error(f"获取恐慌指数历史失败: {e}")
+            return []
+    
+    def get_funding_history(self, coin: str, hours: int = 168) -> List[float]:
+        """
+        获取资金费率历史
+        :param coin: 币种符号
+        :param hours: 获取最近N小时的数据
+        :return: 资金费率列表
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(f'''
+                SELECT coins_data FROM market_data
+                WHERE timestamp >= datetime('now', '-{hours} hours')
+                ORDER BY timestamp
+            ''')
+            
+            rates = []
+            for row in cursor.fetchall():
+                try:
+                    coins_data = json.loads(row[0])
+                    if coin in coins_data:
+                        funding = coins_data[coin].get('funding_rate')
+                        if funding is not None:
+                            rates.append(funding)
+                except json.JSONDecodeError:
+                    continue
+            
+            return rates
+        
+        except Exception as e:
+            logger.error(f"获取资金费率历史失败: {e}")
+            return []
+    
+    def get_signal_statistics(self) -> Dict:
+        """
+        获取信号统计
+        :return: 统计信息字典
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total_signals,
+                    SUM(CASE WHEN is_successful = 1 THEN 1 ELSE 0 END) as winning_signals,
+                    AVG(return_7d) as avg_return_7d,
+                    coin_symbol,
+                    signal_type
+                FROM signals
+                WHERE return_7d IS NOT NULL
+                GROUP BY coin_symbol, signal_type
+            ''')
+            
+            stats = {}
+            for row in cursor.fetchall():
+                key = f"{row[3]}_{row[4]}"
+                stats[key] = {
+                    'total': row[0],
+                    'wins': row[1],
+                    'win_rate': (row[1] / row[0]) * 100 if row[0] > 0 else 0,
+                    'avg_return': row[2]
+                }
+            
+            return stats
+        
+        except Exception as e:
+            logger.error(f"获取统计数据失败: {e}")
+            return {}
+    
+    def close(self):
+        """关闭数据库连接"""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+            logger.info("数据库连接已关闭")
