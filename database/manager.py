@@ -219,6 +219,8 @@ class DatabaseManager:
                     COUNT(*) as total_signals,
                     SUM(CASE WHEN is_successful = 1 THEN 1 ELSE 0 END) as winning_signals,
                     AVG(return_7d) as avg_return_7d,
+                    MIN(return_7d) as min_return_7d,
+                    MAX(return_7d) as max_return_7d,
                     coin_symbol,
                     signal_type
                 FROM signals
@@ -228,12 +230,25 @@ class DatabaseManager:
             
             stats = {}
             for row in cursor.fetchall():
-                key = f"{row[3]}_{row[4]}"
+                key = f"{row[5]}_{row[6]}"
+                total = row[0]
+                wins = row[1]
+                avg_return = row[2] if row[2] else 0
+                min_return = row[3] if row[3] else 0
+                max_return = row[4] if row[4] else 0
+                
+                # 计算风险指标
+                volatility = (max_return - min_return) / 2 if total > 0 else 0
+                
                 stats[key] = {
-                    'total': row[0],
-                    'wins': row[1],
-                    'win_rate': (row[1] / row[0]) * 100 if row[0] > 0 else 0,
-                    'avg_return': row[2]
+                    'total': total,
+                    'wins': wins,
+                    'losses': total - wins,
+                    'win_rate': (wins / total) * 100 if total > 0 else 0,
+                    'avg_return': avg_return,
+                    'min_return': min_return,
+                    'max_return': max_return,
+                    'volatility': volatility
                 }
             
             return stats
@@ -241,6 +256,153 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"获取统计数据失败: {e}")
             return {}
+    
+    def get_overfitting_warning(self, stats: Dict) -> dict:
+        """
+        生成过拟合警告
+        :param stats: 统计信息
+        :return: 警告信息
+        """
+        warnings = []
+        risk_level = 0
+        
+        if not stats:
+            return {'risk_level': 0, 'warnings': ['暂无回测数据']}
+        
+        # 检查样本量
+        total_signals = sum(s['total'] for s in stats.values())
+        if total_signals < 10:
+            warnings.append(f"⚠️ 样本量过小 ({total_signals}个)，统计无意义")
+            risk_level += 2
+        elif total_signals < 30:
+            warnings.append(f"⚠️ 样本量偏少 ({total_signals}个)，可信度低")
+            risk_level += 1
+        
+        # 检查胜率异常
+        for key, s in stats.items():
+            if s['total'] >= 10 and s['win_rate'] > 80:
+                warnings.append(f"⚠️ {key} 胜率过高 ({s['win_rate']:.1f}%)，可能过拟合")
+                risk_level += 1
+            elif s['total'] >= 10 and s['win_rate'] < 30:
+                warnings.append(f"⚠️ {key} 胜率过低 ({s['win_rate']:.1f}%)，策略无效")
+                risk_level += 1
+        
+        # 检查收益波动
+        for key, s in stats.items():
+            if s['volatility'] > 30:
+                warnings.append(f"⚠️ {key} 波动过大 ({s['volatility']:.1f}%)，风险高")
+                risk_level += 1
+        
+        # 检查买卖不平衡
+        buy_signals = sum(s['total'] for key, s in stats.items() if 'BUY' in key)
+        sell_signals = sum(s['total'] for key, s in stats.items() if 'SELL' in key)
+        if buy_signals > 0 and sell_signals > 0:
+            ratio = buy_signals / sell_signals
+            if ratio > 3:
+                warnings.append(f"⚠️ 买卖严重失衡 (买:卖 = {ratio:.1f}:1)")
+                risk_level += 1
+        
+        return {'risk_level': risk_level, 'warnings': warnings}
+    
+    def get_pending_backtest_signals(self, days_list: List[int]) -> List[Dict]:
+        """
+        获取需要回测的信号
+        :param days_list: 需要回测的天数列表，如 [7, 14, 30]
+        :return: 信号列表
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT id, timestamp, coin_symbol, signal_type, price_at_signal
+                FROM signals
+                WHERE return_7d IS NULL
+                ORDER BY timestamp
+            ''')
+            
+            signals = []
+            for row in cursor.fetchall():
+                signals.append({
+                    'id': row[0],
+                    'timestamp': datetime.fromisoformat(row[1].replace(' ', 'T')) if isinstance(row[1], str) else row[1],
+                    'coin': row[2],
+                    'type': row[3],
+                    'price': row[4]
+                })
+            
+            return signals
+        
+        except Exception as e:
+            logger.error(f"获取待回测信号失败: {e}")
+            return []
+    
+    def update_backtest_results(self, signal_id: int, results: Dict):
+        """
+        更新回测结果
+        :param signal_id: 信号ID
+        :param results: 回测结果字典
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                UPDATE signals SET
+                    price_7d = ?,
+                    price_14d = ?,
+                    price_30d = ?,
+                    return_7d = ?,
+                    return_14d = ?,
+                    return_30d = ?,
+                    is_successful = ?
+                WHERE id = ?
+            ''', (
+                results.get('price_7d'),
+                results.get('price_14d'),
+                results.get('price_30d'),
+                results.get('return_7d'),
+                results.get('return_14d'),
+                results.get('return_30d'),
+                results.get('is_successful'),
+                signal_id
+            ))
+            
+            conn.commit()
+            logger.info(f"回测结果已更新: 信号ID {signal_id}")
+        
+        except Exception as e:
+            logger.error(f"更新回测结果失败: {e}")
+            conn.rollback()
+    
+    def get_price_at_time(self, coin: str, timestamp: datetime) -> Optional[float]:
+        """
+        从历史数据中获取指定时间的价格
+        :param coin: 币种
+        :param timestamp: 时间戳
+        :return: 价格
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT coins_data FROM market_data
+                WHERE timestamp <= ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ''', (timestamp.isoformat(),))
+            
+            row = cursor.fetchone()
+            if row:
+                coins_data = json.loads(row[0])
+                if coin in coins_data:
+                    return coins_data[coin].get('price')
+        
+        except Exception as e:
+            logger.error(f"获取历史价格失败: {e}")
+        
+        return None
     
     def close(self):
         """关闭数据库连接"""

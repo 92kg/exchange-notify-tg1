@@ -17,6 +17,7 @@ class SignalGenerator:
         self.thresholds = config['thresholds']
         self.reversal_config = config['reversal']
         self.resonance_config = config['resonance']
+        self.strategy_config = config.get('strategy', {})
     
     def generate_signals(self, data: dict) -> List[Dict]:
         """
@@ -25,6 +26,10 @@ class SignalGenerator:
         :return: 信号列表
         """
         signals = []
+        
+        if not self.strategy_config.get('use_fear_greed', True):
+            logger.warning("恐慌指数已禁用，跳过信号生成")
+            return signals
         
         if not data.get('fear_greed'):
             logger.warning("无恐慌指数数据，跳过信号生成")
@@ -48,7 +53,7 @@ class SignalGenerator:
                 signals.append(signal)
         
         # 检测共振
-        if self.resonance_config['enabled']:
+        if self.strategy_config.get('use_resonance', True) and self.resonance_config['enabled']:
             resonance_count = len(signals)
             min_coins = self.resonance_config['min_coins']
             
@@ -93,32 +98,36 @@ class SignalGenerator:
         strength = "弱"
         reasons = [f"恐慌指数: {fg_value}"]
         tags = ["#观察"]
+        is_reversal = False
         
         # 检查拐点
-        is_reversal = self._check_reversal(fg_value)
-        if is_reversal:
-            strength = "中等"
-            reasons.append("✅ 恐慌拐点确认")
-            tags = ["#拐点确认"]
+        if self.strategy_config.get('use_reversal', True) and self.reversal_config['enabled']:
+            is_reversal = self._check_reversal(fg_value)
+            if is_reversal:
+                strength = "中等"
+                reasons.append("✅ 恐慌拐点确认")
+                tags = ["#拐点确认"]
         
         # 检查资金费率分位数
-        funding = coin_data.get('funding_rate')
-        if funding is not None:
-            funding_pct = self._calculate_funding_percentile(coin, funding)
-            
-            if funding_pct and funding_pct < self.thresholds['funding_panic_percentile']:
-                strength = "强"
-                reasons.append(f"资金费率分位: {funding_pct:.1f}% (极端恐慌)")
-                tags = ["#抄底"]
+        if self.strategy_config.get('use_funding_percentile', True):
+            funding = coin_data.get('funding_rate')
+            if funding is not None:
+                funding_pct = self._calculate_funding_percentile(coin, funding)
+                
+                if funding_pct and funding_pct < self.thresholds['funding_panic_percentile']:
+                    strength = "强"
+                    reasons.append(f"资金费率分位: {funding_pct:.1f}% (极端恐慌)")
+                    tags = ["#抄底"]
         
         # 检查多空比
-        ls = coin_data.get('longshort')
-        if ls:
-            ratio = ls.get('ratio', 1)
-            if ratio < self.thresholds['longshort_extreme']:
-                reasons.append(f"多空比: {ratio} (空头主导)")
-                if strength == "强":
-                    strength = "极强"
+        if self.strategy_config.get('use_longshort', True):
+            ls = coin_data.get('longshort')
+            if ls:
+                ratio = ls.get('ratio', 1)
+                if ratio < self.thresholds['longshort_extreme']:
+                    reasons.append(f"多空比: {ratio} (空头主导)")
+                    if strength == "强":
+                        strength = "极强"
         
         # 只在有强信号时才发出
         if strength in ["中等", "强", "极强"] or is_reversal:
@@ -141,29 +150,33 @@ class SignalGenerator:
     ) -> Optional[Dict]:
         """生成卖出信号"""
         
-        strength = "中等"
+        strength = "弱"
         reasons = [f"贪婪指数: {fg_value}"]
-        tags = ["#减仓观望"]
+        tags = ["#观察"]
+        is_reversal = False
+        funding_pct = None
         
         # 检查拐点
-        is_reversal = self._check_reversal(fg_value)
-        if is_reversal:
-            strength = "强"
-            reasons.append("✅ 贪婪拐点确认")
-            tags = ["#拐点确认", "#派发区"]
+        if self.strategy_config.get('use_reversal', True) and self.reversal_config['enabled']:
+            is_reversal = self._check_reversal(fg_value)
+            if is_reversal:
+                strength = "中等"
+                reasons.append("✅ 贪婪拐点确认")
+                tags = ["#拐点确认", "#派发区"]
         
         # 检查资金费率
-        funding = coin_data.get('funding_rate')
-        if funding is not None:
-            funding_pct = self._calculate_funding_percentile(coin, funding)
-            
-            if funding_pct and funding_pct > self.thresholds['funding_greed_percentile']:
-                strength = "极强"
-                reasons.append(f"资金费率分位: {funding_pct:.1f}% (过热)")
-                tags = ["#派发区", "#过热"]
+        if self.strategy_config.get('use_funding_percentile', True):
+            funding = coin_data.get('funding_rate')
+            if funding is not None:
+                funding_pct = self._calculate_funding_percentile(coin, funding)
+                
+                if funding_pct and funding_pct > self.thresholds['funding_greed_percentile']:
+                    strength = "强"
+                    reasons.append(f"资金费率分位: {funding_pct:.1f}% (过热)")
+                    tags = ["#派发区", "#过热"]
         
-        # 只在有拐点或极端资金费率时发信号
-        if is_reversal or (funding_pct and funding_pct > 85):
+        # 只在有强信号时才发出（与买入逻辑对称）
+        if strength in ["中等", "强", "极强"] or is_reversal:
             return {
                 'coin': coin,
                 'type': 'SELL',

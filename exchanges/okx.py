@@ -21,30 +21,38 @@ class OKXExchange(ExchangeBase):
             'Content-Type': 'application/json'
         })
     
-    def _make_request(self, endpoint: str, params: dict = None) -> Optional[list]:
+    def _make_request(self, endpoint: str, params: dict = None, max_retries=3) -> Optional[list]:
         """统一请求处理"""
         url = f"{self.BASE_URL}{endpoint}"
-        try:
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            # 增加对 data 是否为字典的检查，防止 code 解析错误
-            if isinstance(data, dict) and data.get('code') == '0':
-                return data.get('data', [])
-            elif isinstance(data, list):
-                # 有些特殊接口可能直接返回列表
-                return data
-            else:
-                msg = data.get('msg') if isinstance(data, dict) else "未知响应格式"
-                print(f"OKX API错误: {msg}")
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"OKX请求失败: {e}")
-            return None
-        except Exception as e:
-            print(f"OKX异常: {e}")
-            return None
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if isinstance(data, dict) and data.get('code') == '0':
+                    return data.get('data', [])
+                elif isinstance(data, list):
+                    return data
+                else:
+                    msg = data.get('msg') if isinstance(data, dict) else "未知响应格式"
+                    print(f"OKX API错误: {msg}")
+                    return None
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    print(f"OKX请求失败，重试 {attempt + 1}/{max_retries}: {e}")
+                    time.sleep(2)
+                else:
+                    print(f"OKX请求失败: {e}")
+                    return None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"OKX异常，重试 {attempt + 1}/{max_retries}: {e}")
+                    time.sleep(2)
+                else:
+                    print(f"OKX异常: {e}")
+                    return None
+        return None
     def get_spot_price(self, symbol: str) -> Optional[float]:
         """获取现货价格"""
         endpoint = "/api/v5/market/ticker"

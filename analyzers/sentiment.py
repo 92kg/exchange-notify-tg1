@@ -4,6 +4,7 @@
 """
 
 import requests
+import time
 from typing import Optional, Dict
 import logging
 
@@ -17,24 +18,28 @@ class SentimentAnalyzer:
         self.db = db
         self.session = requests.Session()
     
-    def get_fear_greed_index(self) -> Optional[Dict]:
+    def get_fear_greed_index(self, max_retries=3) -> Optional[Dict]:
         """
         获取恐慌贪婪指数
         数据源: Alternative.me
         """
-        try:
-            url = "https://api.alternative.me/fng/?limit=1"
-            response = self.session.get(url, timeout=10).json()
-            
-            data = response['data'][0]
-            return {
-                'value': int(data['value']),
-                'classification': data['value_classification'],
-                'timestamp': data['timestamp']
-            }
-        except Exception as e:
-            logger.error(f"获取恐慌指数失败: {e}")
-            return None
+        url = "https://api.alternative.me/fng/?limit=1"
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(url, timeout=30).json()
+                data = response['data'][0]
+                return {
+                    'value': int(data['value']),
+                    'classification': data['value_classification'],
+                    'timestamp': data['timestamp']
+                }
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"获取恐慌指数失败，重试 {attempt + 1}/{max_retries}: {e}")
+                    time.sleep(2)
+                else:
+                    logger.error(f"获取恐慌指数失败: {e}")
+                    return None
     
     def analyze_market_sentiment(self, data: dict) -> Dict:
         """

@@ -40,6 +40,16 @@ thresholds:
   funding_greed_percentile: 85   # 资金费率贪婪分位数
   longshort_extreme: 0.8    # 多空比极端值
 
+# 策略开关（控制使用哪些条件）
+# 重要度排序: 恐慌指数(核心) > 拐点确认 > 资金费率 > 多空比 > 共振检测
+# 详情请参考 STRATEGY_GUIDE.md
+strategy:
+  use_fear_greed: true      # 使用恐慌指数（核心条件，禁用则系统无法工作）
+  use_funding_percentile: true  # 使用资金费率分位数（中等重要）
+  use_longshort: false       # 使用多空比（较低重要，容易被操纵）
+  use_reversal: true        # 使用拐点确认（强烈推荐，防止过早入场）
+  use_resonance: false       # 使用共振检测（较低重要，币种少时无效）
+
 # 拐点确认配置
 reversal:
   enabled: true

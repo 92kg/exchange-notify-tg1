@@ -15,6 +15,7 @@ from analyzers.sentiment import SentimentAnalyzer
 from analyzers.signal import SignalGenerator
 from notifiers.telegram import TelegramNotifier
 from utils.helpers import format_price, format_percentage
+from datetime import timedelta
 
 class CryptoSentimentMonitor:
     """加密货币情绪监控主类"""
@@ -83,10 +84,78 @@ class CryptoSentimentMonitor:
         config_path = Path(config_file)
         
         if not config_path.exists():
-            raise FileNotFoundError(f"配置文件不存在: {config_file}")
+            raise FileNotFoundError(f"配置文件不存在: {config_path}")
         
         with open(config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
+    
+    def _calculate_strategy_complexity(self) -> dict:
+        """计算策略复杂度，评估过拟合风险"""
+        strategy = self.config.get('strategy', {})
+        
+        enabled_features = []
+        feature_weights = {
+            'use_fear_greed': 5,     # 核心，权重最高
+            'use_reversal': 4,       # 拐点确认，非常重要
+            'use_funding_percentile': 3,  # 资金费率，中等重要
+            'use_longshort': 2,       # 多空比，较低重要
+            'use_resonance': 1        # 共振检测，最低重要
+        }
+        
+        if strategy.get('use_fear_greed', True):
+            enabled_features.append(('恐慌指数', 5))
+        if strategy.get('use_funding_percentile', True):
+            enabled_features.append(('资金费率分位', 3))
+        if strategy.get('use_longshort', True):
+            enabled_features.append(('多空比', 2))
+        if strategy.get('use_reversal', True):
+            enabled_features.append(('拐点确认', 4))
+        if strategy.get('use_resonance', True):
+            enabled_features.append(('共振检测', 1))
+        
+        # 按重要度排序
+        enabled_features.sort(key=lambda x: x[1], reverse=True)
+        feature_count = len(enabled_features)
+        total_weight = sum(w for _, w in enabled_features)
+        
+        if feature_count >= 5:
+            complexity = "极高风险"
+            risk_level = 3
+            warning = "⚠️ 启用全部条件，严重过度拟合风险！"
+        elif feature_count >= 4:
+            complexity = "高风险"
+            risk_level = 2
+            warning = "⚠️ 条件过多，存在过拟合风险"
+        elif feature_count >= 3:
+            complexity = "中等风险"
+            risk_level = 1
+            warning = "ℹ️ 策略较为复杂，建议简化"
+        else:
+            complexity = "低风险"
+            risk_level = 0
+            warning = "✅ 策略简洁，过拟合风险低"
+        
+        return {
+            'feature_count': feature_count,
+            'total_weight': total_weight,
+            'enabled_features': enabled_features,
+            'complexity': complexity,
+            'risk_level': risk_level,
+            'warning': warning
+        }
+    
+    def _get_strategy_summary(self) -> str:
+        """获取策略摘要"""
+        complexity = self._calculate_strategy_complexity()
+        
+        summary = "\n📊 策略复杂度分析:\n"
+        summary += f"  启用条件数: {complexity['feature_count']}/5\n"
+        summary += f"  综合权重: {complexity['total_weight']}/15\n"
+        summary += f"  风险等级: {complexity['complexity']}\n"
+        summary += f"  {complexity['warning']}\n"
+        summary += f"  条件: {', '.join([name for name, _ in complexity['enabled_features']])}\n"
+        
+        return summary
     
     def _setup_logging(self):
         """配置日志系统"""
@@ -211,9 +280,13 @@ class CryptoSentimentMonitor:
     def _format_message(self, data: dict, signals: list) -> str:
         """格式化Telegram消息"""
         
-        msg = f"<b>🚨 情绪警报 v3.0</b>\n"
+        complexity = self._calculate_strategy_complexity()
+        risk_emoji = {"极高风险": "🔴", "高风险": "🟠", "中等风险": "🟡", "低风险": "🟢"}
+        
+        msg = f"<b>🚨 情绪警报 v3.2</b>\n"
         msg += f"⏰ {data['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}\n"
-        msg += f"📡 交易所: {self.exchange.name.upper()}\n\n"
+        msg += f"📡 交易所: {self.exchange.name.upper()}\n"
+        msg += f"🎯 策略风险: {risk_emoji.get(complexity['complexity'], '⚪')} {complexity['complexity']}\n\n"
         
         # 信号详情
         for signal in signals:
@@ -253,14 +326,20 @@ class CryptoSentimentMonitor:
         """运行监控循环"""
         
         interval = self.config['runtime']['check_interval']
+        backtest_days = self.config.get('backtest', {}).get('profit_days', [7, 14, 30])
+        
+        # 计算策略复杂度
+        complexity = self._calculate_strategy_complexity()
+        strategy_summary = self._get_strategy_summary()
         
         # 发送启动消息
         start_msg = (
-            f"🤖 <b>情绪监控系统 v3.0 启动</b>\n\n"
+            f"🤖 <b>情绪监控系统 v3.2 启动</b>\n\n"
             f"📡 交易所: {self.exchange.name.upper()}\n"
             f"💰 监控币种: {', '.join(self.enabled_coins)}\n"
             f"⏱ 检查间隔: {interval//60}分钟\n"
-            f"⏰ 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏰ 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"{strategy_summary}"
         )
         
         if self.notifier:
@@ -268,11 +347,18 @@ class CryptoSentimentMonitor:
         
         self.logger.info(start_msg.replace('<b>', '').replace('</b>', ''))
         
+        # 警告高风险策略
+        if complexity['risk_level'] >= 2:
+            self.logger.warning(f"⚠️ 策略风险: {complexity['complexity']} - 建议简化策略参数")
+        
         # 主循环
         while True:
             try:
                 # 分析并生成信号
                 self.analyze_and_signal()
+                
+                # 执行回测
+                self.run_backtest(backtest_days)
                 
                 # 等待下次检查
                 self.logger.info(f"\n⏳ 等待 {interval//60} 分钟后下次检查...\n")
@@ -294,14 +380,135 @@ class CryptoSentimentMonitor:
                 # 出错后等待5分钟再重试
                 self.logger.info("等待5分钟后重试...")
                 time.sleep(300)
+    
+    def run_backtest(self, days_list: list):
+        """执行回测任务"""
+        signals = self.db.get_pending_backtest_signals(days_list)
+        
+        if not signals:
+            return
+        
+        self.logger.info(f"开始回测 {len(signals)} 个历史信号...")
+        
+        for signal in signals:
+            try:
+                results = self._backtest_signal(signal, days_list)
+                if results:
+                    self.db.update_backtest_results(signal['id'], results)
+                    time.sleep(0.5)
+            except Exception as e:
+                self.logger.error(f"回测信号失败 ID:{signal['id']} {e}")
+    
+    def _backtest_signal(self, signal: dict, days_list: list) -> dict:
+        """回测单个信号"""
+        results = {}
+        signal_time = signal['timestamp']
+        coin = signal['coin']
+        signal_type = signal['type']
+        entry_price = signal['price']
+        
+        if not entry_price:
+            return None
+        
+        for days in days_list:
+            target_time = signal_time + timedelta(days=days)
+            
+            klines = self.exchange.get_historical_klines(
+                coin, '1D', target_time - timedelta(hours=1), target_time + timedelta(hours=1)
+            )
+            
+            if klines:
+                price_key = f'price_{days}d'
+                return_key = f'return_{days}d'
+                target_price = klines[-1]['close']
+                
+                results[price_key] = target_price
+                if signal_type == 'BUY':
+                    results[return_key] = ((target_price - entry_price) / entry_price) * 100
+                else:
+                    results[return_key] = ((entry_price - target_price) / entry_price) * 100
+        
+        if 'return_7d' in results:
+            results['is_successful'] = 1 if results['return_7d'] > 0 else 0
+        
+        return results
 
+
+def show_statistics():
+    """显示统计信息和过拟合警告"""
+    import yaml
+    from database.manager import DatabaseManager
+    from utils.helpers import format_percentage
+    
+    config_path = Path('config.yaml')
+    if not config_path.exists():
+        print("❌ 配置文件不存在")
+        return
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    db = DatabaseManager(config['runtime']['db_file'])
+    stats = db.get_signal_statistics()
+    warning_info = db.get_overfitting_warning(stats)
+    
+    print("\n" + "="*60)
+    print("📊 信号回测统计报告")
+    print("="*60)
+    
+    if not stats:
+        print("\n暂无回测数据，请先运行系统收集信号")
+    else:
+        print(f"\n回测周期: 7天收益统计")
+        print(f"数据截止: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        for key, s in stats.items():
+            coin, sig_type = key.split('_')
+            print(f"【{coin} - {sig_type}】")
+            print(f"  总信号数: {s['total']}")
+            print(f"  盈亏: {s['wins']}胜 / {s['losses']}负")
+            print(f"  胜率: {s['win_rate']:.1f}%")
+            print(f"  平均收益: {format_percentage(s['avg_return'])}")
+            print(f"  最大盈利: {format_percentage(s['max_return'])}")
+            print(f"  最大亏损: {format_percentage(s['min_return'])}")
+            print(f"  波动率: {s['volatility']:.1f}%")
+            print()
+        
+        print("="*60)
+        print("⚠️ 过拟合风险分析")
+        print("="*60)
+        
+        if warning_info['warnings']:
+            for w in warning_info['warnings']:
+                print(w)
+        else:
+            print("✅ 未发现明显的过拟合问题")
+        
+        risk_levels = ["🟢 低风险", "🟡 中风险", "🟠 高风险", "🔴 极高风险"]
+        print(f"\n综合风险评级: {risk_levels[min(warning_info['risk_level'], 3)]}")
+        
+        if warning_info['risk_level'] >= 2:
+            print("\n💡 建议:")
+            print("  1. 简化策略配置，减少启用条件")
+            print("  2. 收集更多样本数据（至少30个）")
+            print("  3. 在不同市场环境下测试")
+    
+    print("="*60 + "\n")
+    db.close()
 
 def main():
     """主函数"""
     
+    import sys
+    
+    # 检查是否显示统计
+    if len(sys.argv) > 1 and sys.argv[1] == '--stats':
+        show_statistics()
+        return
+    
     print("""
     ╔════════════════════════════════════════════════════╗
-    ║   加密货币情绪监控系统 v3.0                        ║
+    ║   加密货币情绪监控系统 v3.2                        ║
     ║   Crypto Sentiment Monitor                         ║
     ╚════════════════════════════════════════════════════╝
     
@@ -314,10 +521,16 @@ def main():
     ✓ Telegram实时推送
     ✓ SQLite3持久化
     ✓ 模块化架构
+    ✓ 历史信号回测
+    ✓ 策略复杂度评估
+    
+    使用方法：
+    python main.py          # 启动监控系统
+    python main.py --stats  # 查看回测统计和过拟合分析
     
     作者: Claude
-    版本: 3.0.0
-    日期: 2025-02-02
+    版本: 3.2.0
+    日期: 2026-02-03
     """)
     
     try:
