@@ -5,6 +5,7 @@
 
 from typing import Dict, List, Optional
 import logging
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class SignalGenerator:
         self.reversal_config = config['reversal']
         self.resonance_config = config['resonance']
         self.strategy_config = config.get('strategy', {})
+        self.windows_config = config.get('windows', {})
     
     def generate_signals(self, data: dict) -> List[Dict]:
         """
@@ -42,11 +44,16 @@ class SignalGenerator:
             if not coin_data.get('price'):
                 continue
             
+            ts_val = data.get('timestamp')
+            
+            current_ts = ts_val.timestamp() if hasattr(ts_val, 'timestamp') else None
+            
             signal = self._generate_coin_signal(
                 coin_symbol, 
                 coin_data, 
                 fg_value, 
-                data
+                data,
+                current_ts
             )
             
             if signal:
@@ -71,18 +78,19 @@ class SignalGenerator:
         coin: str, 
         coin_data: dict, 
         fg_value: int, 
-        full_data: dict
+        full_data: dict,
+        current_timestamp: Optional[int] = None
     ) -> Optional[Dict]:
         """
         为单个币种生成信号
         """
         # 买入信号判断
         if fg_value < self.thresholds['fear_buy']:
-            return self._generate_buy_signal(coin, coin_data, fg_value, full_data)
+            return self._generate_buy_signal(coin, coin_data, fg_value, full_data, current_timestamp)
         
         # 卖出信号判断
         elif fg_value > self.thresholds['greed_sell']:
-            return self._generate_sell_signal(coin, coin_data, fg_value, full_data)
+            return self._generate_sell_signal(coin, coin_data, fg_value, full_data, current_timestamp)
         
         return None
     
@@ -91,7 +99,8 @@ class SignalGenerator:
         coin: str, 
         coin_data: dict, 
         fg_value: int, 
-        full_data: dict
+        full_data: dict,
+        current_timestamp: Optional[int] = None
     ) -> Optional[Dict]:
         """生成买入信号"""
         
@@ -102,7 +111,7 @@ class SignalGenerator:
         
         # 检查拐点
         if self.strategy_config.get('use_reversal', True) and self.reversal_config['enabled']:
-            is_reversal = self._check_reversal(fg_value)
+            is_reversal = self._check_reversal(fg_value, current_timestamp)
             if is_reversal:
                 strength = "中等"
                 reasons.append("✅ 恐慌拐点确认")
@@ -146,7 +155,8 @@ class SignalGenerator:
         coin: str, 
         coin_data: dict, 
         fg_value: int, 
-        full_data: dict
+        full_data: dict,
+        current_timestamp: Optional[int] = None
     ) -> Optional[Dict]:
         """生成卖出信号"""
         
@@ -158,7 +168,7 @@ class SignalGenerator:
         
         # 检查拐点
         if self.strategy_config.get('use_reversal', True) and self.reversal_config['enabled']:
-            is_reversal = self._check_reversal(fg_value)
+            is_reversal = self._check_reversal(fg_value, current_timestamp)
             if is_reversal:
                 strength = "中等"
                 reasons.append("✅ 贪婪拐点确认")
@@ -187,53 +197,118 @@ class SignalGenerator:
         
         return None
     
-    def _check_reversal(self, current_fg: int) -> bool:
+    def _check_reversal(self, current_fg: int, current_timestamp: Optional[int] = None) -> bool:
         """
         检查情绪拐点
         需要连续N次反转确认
         """
         if not self.reversal_config['enabled']:
             return False
-        
+
         try:
             # 获取历史恐慌指数
-            history = self.db.get_fear_greed_history(hours=72)
+            # Use configured history window or default to 72 hours
+            history_hours = self.windows_config.get('reversal_history_hours', 72)
+            full_history = self.db.get_fear_greed_history(hours=history_hours)
             
-            # 检查数据量是否足够
+            # 过滤掉当前的数据点
+            history = []
+            if current_timestamp:
+                values = []
+                for item in full_history:
+                    # 将DB时间字符串转为timestamp
+                    try:
+                        if isinstance(item['timestamp'], str):
+                            dt = datetime.fromisoformat(item['timestamp'])
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            ts = dt.timestamp()
+                        else:
+                            ts = item['timestamp']
+                        
+                        # 只有当记录时间早于当前时间(容差5秒)才算历史
+                        if ts < current_timestamp - 5:
+                            values.append(item['value'])
+                    except Exception as e:
+                        # 时间戳解析失败时，跳过该数据点（避免把当前点误加入历史）
+                        # 如果需要调试，取消下面的注释
+                        # logger.debug(f"跳过数据点，时间解析失败: {e}")
+                        continue
+                history = values
+            else:
+                # 兼容旧逻辑
+                history = [item['value'] for item in full_history]
+
+            # N次反转需要至少N个数据变化，即N+1个数据点
+            # 由于我们使用history[-1]作为起始点，所以至少需要required_periods个历史数据
             required_periods = self.reversal_config.get('consecutive_periods', 2)
             if len(history) < required_periods:
                 return False
-            
+
             # 恐慌反转：连续上升（从恐慌转向贪婪）
             if current_fg < 30:
-                consecutive_rises = 0
-                for i in range(len(history) - 1, 0, -1):
-                    if history[i] > history[i-1] and history[i] < 30:
-                        consecutive_rises += 1
-                        if consecutive_rises >= required_periods:
-                            return True
-                    else:
-                        break
-                # 检查当前值
-                if consecutive_rises >= required_periods - 1 and current_fg > history[-1]:
-                    return True
-            
+                # 确保最新的历史数据也在恐慌区域
+                if history[-1] >= 30:
+                    return False
+
+                # 检查是否有required_periods次连续上升
+                # 序列：history[-required_periods] -> ... -> history[-2] -> history[-1] -> current_fg
+                # 或者：history[-required_periods+1] -> ... -> history[-1] -> current_fg （如果刚好够）
+
+                # 获取要检查的历史数据范围
+                check_range = required_periods  # 需要检查的历史数据点数
+                if len(history) < check_range:
+                    return False
+
+                start_idx = len(history) - check_range
+                for i in range(start_idx, len(history)):
+                    # 检查所有历史数据是否都在恐慌区域
+                    if history[i] >= 30:
+                        return False
+
+                # 检查连续上升
+                # 从 start_idx 到 len(history)-1 检查历史数据中的连续上升
+                for i in range(start_idx + 1, len(history)):
+                    if history[i] <= history[i-1]:
+                        return False  # 没有上升
+
+                # 检查当前值是否继续上升
+                if current_fg <= history[-1]:
+                    return False  # 当前值没有上升
+
+                return True  # 所有的上升检查都通过了
+
             # 贪婪反转：连续下降（从贪婪转向恐慌）
             if current_fg > 70:
-                consecutive_drops = 0
-                for i in range(len(history) - 1, 0, -1):
-                    if history[i] < history[i-1] and history[i] > 70:
-                        consecutive_drops += 1
-                        if consecutive_drops >= required_periods:
-                            return True
-                    else:
-                        break
-                # 检查当前值
-                if consecutive_drops >= required_periods - 1 and current_fg < history[-1]:
-                    return True
-            
+                # 确保最新的历史数据也在贪婪区域
+                if history[-1] <= 70:
+                    return False
+
+                # 检查是否有required_periods次连续下降
+                check_range = required_periods
+                if len(history) < check_range:
+                    return False
+
+                start_idx = len(history) - check_range
+                for i in range(start_idx, len(history)):
+                    # 检查所有历史数据是否都在贪婪区域
+                    if history[i] <= 70:
+                        return False
+
+                # 检查连续下降
+                # 从 start_idx 到 len(history)-1 检查历史数据中的连续下降
+                for i in range(start_idx + 1, len(history)):
+                    if history[i] >= history[i-1]:
+                        return False  # 没有下降
+
+                # 检查当前值是否继续下降
+                if current_fg >= history[-1]:
+                    return False  # 当前值没有下降
+
+                return True  # 所有的下降检查都通过了
+
             return False
-        
+
         except Exception as e:
             logger.error(f"检查拐点失败: {e}")
             return False
@@ -243,7 +318,9 @@ class SignalGenerator:
         计算资金费率在历史中的分位数
         """
         try:
-            history = self.db.get_funding_history(coin, hours=168)  # 7天
+            # Use configured history window or default to 168 hours (7 days)
+            history_hours = self.windows_config.get('funding_history_hours', 168)
+            history = self.db.get_funding_history(coin, hours=history_hours)
             
             if len(history) < 24:  # 至少1天数据
                 return None

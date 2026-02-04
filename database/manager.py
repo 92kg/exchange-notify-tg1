@@ -148,7 +148,7 @@ class DatabaseManager:
             logger.error(f"保存信号失败: {e}")
             conn.rollback()
     
-    def get_fear_greed_history(self, hours: int = 72) -> List[int]:
+    def get_fear_greed_history(self, hours: int = 72) -> List[Dict]:
         """
         获取恐慌指数历史
         :param hours: 获取最近N小时的数据
@@ -159,13 +159,19 @@ class DatabaseManager:
         
         try:
             cursor.execute(f'''
-                SELECT fear_greed_index FROM market_data
+                SELECT fear_greed_index, timestamp FROM market_data
                 WHERE fear_greed_index IS NOT NULL
                 AND timestamp >= datetime('now', '-{hours} hours')
                 ORDER BY timestamp
             ''')
             
-            return [row[0] for row in cursor.fetchall()]
+            history = []
+            for row in cursor.fetchall():
+                history.append({
+                    'value': row[0],
+                    'timestamp': row[1]
+                })
+            return history
         
         except Exception as e:
             logger.error(f"获取恐慌指数历史失败: {e}")

@@ -40,6 +40,11 @@ thresholds:
   funding_greed_percentile: 85   # 资金费率贪婪分位数
   longshort_extreme: 0.8    # 多空比极端值
 
+# Data Analysis Windows (Timeframes for historical data)
+windows:
+  reversal_history_hours: 72  # 拐点检测使用的历史窗口(小时)
+  funding_history_hours: 168  # 资金费率分位数使用的历史窗口(小时)
+
 # 策略开关（控制使用哪些条件）
 # 重要度排序: 恐慌指数(核心) > 拐点确认 > 资金费率 > 多空比 > 共振检测
 # 详情请参考 STRATEGY_GUIDE.md
