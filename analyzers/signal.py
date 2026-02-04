@@ -199,17 +199,37 @@ class SignalGenerator:
             # 获取历史恐慌指数
             history = self.db.get_fear_greed_history(hours=72)
             
-            if len(history) < 3:
+            # 检查数据量是否足够
+            required_periods = self.reversal_config.get('consecutive_periods', 2)
+            if len(history) < required_periods:
                 return False
             
-            # 恐慌反转：连续上升
+            # 恐慌反转：连续上升（从恐慌转向贪婪）
             if current_fg < 30:
-                if history[-1] > history[-2] and current_fg > history[-1]:
+                consecutive_rises = 0
+                for i in range(len(history) - 1, 0, -1):
+                    if history[i] > history[i-1] and history[i] < 30:
+                        consecutive_rises += 1
+                        if consecutive_rises >= required_periods:
+                            return True
+                    else:
+                        break
+                # 检查当前值
+                if consecutive_rises >= required_periods - 1 and current_fg > history[-1]:
                     return True
             
-            # 贪婪反转：连续下降
+            # 贪婪反转：连续下降（从贪婪转向恐慌）
             if current_fg > 70:
-                if history[-1] < history[-2] and current_fg < history[-1]:
+                consecutive_drops = 0
+                for i in range(len(history) - 1, 0, -1):
+                    if history[i] < history[i-1] and history[i] > 70:
+                        consecutive_drops += 1
+                        if consecutive_drops >= required_periods:
+                            return True
+                    else:
+                        break
+                # 检查当前值
+                if consecutive_drops >= required_periods - 1 and current_fg < history[-1]:
                     return True
             
             return False

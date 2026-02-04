@@ -1,516 +1,90 @@
-# AGENTS.md
+# AGENTS.md - Development Guide
 
-本项目采用模块化架构设计，通过多个"智能代理"（Agents）协同工作，实现加密货币情绪监控和交易信号生成。
+## Build/Lint/Test Commands
 
-## 系统架构概述
+### Running Tests
+```bash
+# Run specific test file
+python test_overfitting.py
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CryptoSentimentMonitor                        │
-│                      (主协调代理)                                 │
-└────────────┬────────────┬────────────┬────────────┬─────────────┘
-             │            │            │            │
-     ┌───────▼──────┐ ┌──▼─────┐ ┌────▼────┐ ┌─────▼──────┐
-     │ 交易所代理   │ │情绪代理 │ │信号代理  │ │ 通知代理   │
-     │             │ │       │ │       │ │           │
-     │ • OKX       │ │• 恐慌 │ │• 买入 │ │• Telegram │
-     │ • Binance   │ │  指数 │ │• 卖出 │ │• 消息格式 │
-     │ • 未来扩展  │ │• 多维 │ │• 强度 │ │• 推送控制 │
-     └─────────────┘ └───────┘ └───────┘ └───────────┘
-             │            │            │
-             └────────────┼────────────┘
-                          │
-                  ┌───────▼───────┐
-                  │  数据库代理   │
-                  │               │
-                  │ • SQLite3     │
-                  │ • 历史数据    │
-                  │ • 信号记录    │
-                  └───────────────┘
+# Run main application
+python main.py
+
+# View statistics
+python main.py --stats
 ```
 
-## 代理详细说明
-
-### 1. 交易所代理 (Exchange Agent)
-
-**位置**: `exchanges/`
-
-**职责**: 负责从各个加密货币交易所获取实时市场数据
-
-**支持的交易所**:
-- OKX (`exchanges/okx.py:12`)
-- Binance (`exchanges/binance.py:11`)
-
-**核心功能**:
-- 获取现货价格 `get_spot_price(symbol)`
-- 获取资金费率 `get_funding_rate(symbol)`
-- 获取多空比 `get_longshort_ratio(symbol)`
-- 获取历史K线 `get_historical_klines(symbol, interval, start_time, end_time)`
-
-**抽象基类**: `exchanges/base.py:10`
-
-```python
-class ExchangeBase(ABC):
-    @abstractmethod
-    def get_spot_price(self, symbol: str) -> Optional[float]
-    @abstractmethod
-    def get_funding_rate(self, symbol: str) -> Optional[float]
-    @abstractmethod
-    def get_longshort_ratio(self, symbol: str) -> Optional[Dict]
+### Environment Setup
+```bash
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-**工厂模式**: `exchanges/__init__.py:10`
-
-```python
-class ExchangeFactory:
-    _exchanges = {
-        'okx': OKXExchange,
-        'binance': BinanceExchange,
-    }
+### Project Structure
+```
+encrypt_monitor/
+├── exchanges/         # Exchange API implementations
+├── analyzers/         # Sentiment and signal analysis
+├── database/          # SQLite3 data persistence
+├── notifiers/         # Telegram notifications
+└── utils/             # Helper functions
 ```
 
-**扩展新交易所**:
-1. 继承 `ExchangeBase` 类
-2. 实现所有抽象方法
-3. 在 `ExchangeFactory._exchanges` 中注册
-
----
-
-### 2. 情绪分析代理 (Sentiment Analyzer Agent)
-
-**位置**: `analyzers/sentiment.py:12`
-
-**职责**: 分析市场情绪指标，量化市场状态
-
-**数据来源**:
-- 恐慌贪婪指数 (Alternative.me API)
-- 资金费率历史数据
-- 多空比数据
-
-**核心功能**:
-- `get_fear_greed_index()` - 获取恐慌贪婪指数
-- `analyze_market_sentiment(data)` - 综合市场情绪分析
-
-**情绪状态分类**:
-- `extreme_fear` - 极端恐慌 (买入机会)
-- `fear` - 恐慌 (谨慎买入)
-- `neutral` - 中性 (持有)
-- `greed` - 贪婪 (谨慎卖出)
-- `extreme_greed` - 极端贪婪 (卖出信号)
-
-**分析维度** (`analyzers/sentiment.py:39`):
-```python
-{
-    'overall_sentiment': 'neutral',
-    'fear_greed_status': None,
-    'funding_status': {},  # 每个币种的资金费率状态
-    'longshort_status': {}  # 每个币种的多空比状态
-}
-```
-
----
-
-### 3. 信号生成代理 (Signal Generator Agent)
-
-**位置**: `analyzers/signal.py:11`
-
-**职责**: 基于情绪分析生成交易信号
-
-**信号类型**:
-- BUY - 买入信号
-- SELL - 卖出信号
-
-**信号强度等级**:
-- 弱
-- 中等
-- 强
-- 极强
-
-**核心算法**:
-
-**买入信号条件** (`analyzers/signal.py:75`):
-- 恐慌指数 < 25 (基础条件)
-- 拐点确认 (连续N次反转)
-- 资金费率分位 < 15% (极端恐慌)
-- 多空比 < 0.8 (空头主导)
-
-**卖出信号条件** (`analyzers/signal.py:79`):
-- 贪婪指数 > 75 (基础条件)
-- 拐点确认 (连续N次反转)
-- 资金费率分位 > 85% (过热)
-
-**高级特性**:
-
-1. **拐点确认** (`analyzers/signal.py:177`):
-   - 检查情绪趋势反转
-   - 需要连续N次反转确认
-   - 防止过早入场/出场
-
-2. **资金费率分位数** (`analyzers/signal.py:208`):
-   - 计算当前费率在历史中的位置
-   - 自适应牛熊市调整
-   - 基于过去7天数据
-
-3. **信号共振** (`analyzers/signal.py:51`):
-   - 多个币种同时出现信号
-   - 增强信号强度
-   - 可配置最少共振币种数
-
-**信号标签**:
-- `#观察` - 观察级别信号
-- `#拐点确认` - 情绪反转确认
-- `#抄底` - 极端恐慌抄底机会
-- `#减仓观望` - 贪婪状态减仓
-- `#派发区` - 市场过热
-- `#共振` - 多币种共振信号
-
----
-
-### 4. 数据库代理 (Database Agent)
-
-**位置**: `database/manager.py:14`
-
-**职责**: 持久化存储历史数据和交易信号
-
-**数据库类型**: SQLite3
-
-**核心表结构**:
-
-**market_data 表**:
-```sql
-CREATE TABLE IF NOT EXISTS market_data (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    fear_greed_index INTEGER,
-    coins_data TEXT  -- JSON格式存储所有币种数据
-)
-```
-
-**signals 表**:
-```sql
-CREATE TABLE IF NOT EXISTS signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    coin_symbol TEXT,
-    signal_type TEXT,  -- BUY or SELL
-    strength TEXT,
-    price_at_signal REAL,
-    fear_greed_at_signal INTEGER,
-    reasons TEXT,  -- JSON
-    tags TEXT,     -- JSON
-    -- 回测字段
-    price_7d REAL,
-    price_14d REAL,
-    price_30d REAL,
-    return_7d REAL,
-    return_14d REAL,
-    return_30d REAL,
-    is_successful BOOLEAN
-)
-```
-
-**核心功能**:
-- `save_market_data(data)` - 保存市场数据
-- `save_signal(signal, data)` - 保存交易信号
-- `get_fear_greed_history(hours)` - 获取恐慌指数历史
-- `get_funding_history(coin, hours)` - 获取资金费率历史
-- `get_signal_statistics()` - 获取信号统计信息
-
----
-
-### 5. 通知代理 (Notification Agent)
-
-**位置**: `notifiers/telegram.py:10`
-
-**职责**: 将交易信号实时推送给用户
-
-**支持平台**: Telegram
-
-**核心功能**:
-- `send(message, parse_mode)` - 发送消息
-- `test_connection()` - 测试连接
-
-**消息格式** (`main.py:211`):
-```
-🚨 情绪警报 v3.0
-⏰ 2025-02-02 12:00:00
-📡 交易所: OKX
-
-📈 买入信号 - BTC
-强度: 极强
-价格: $45,234.56
-原因:
-  • 恐慌指数: 20
-  • ✅ 恐慌拐点确认
-  • 资金费率分位: 8.5% (极端恐慌)
-  • 多空比: 0.65 (空头主导)
-标签: #抄底 #拐点确认
-
-📊 市场概况
-恐慌指数: 20 (Extreme Fear)
-```
-
-**配置项** (`config.yaml:54`):
-```yaml
-telegram:
-  bot_token: "你的Bot_Token"
-  chat_id: "你的Chat_ID"
-  enabled: true
-```
-
----
-
-### 6. 主协调代理 (Main Coordinator Agent)
-
-**位置**: `main.py:19`
-
-**类名**: `CryptoSentimentMonitor`
-
-**职责**: 协调所有代理，执行主循环
-
-**工作流程**:
-
-```
-初始化阶段:
-  1. 加载配置文件
-  2. 初始化交易所代理
-  3. 初始化数据库代理
-  4. 初始化情绪分析代理
-  5. 初始化信号生成代理
-  6. 初始化通知代理
-
-监控循环:
-  ┌─────────────────────────────┐
-  │ 1. collect_market_data()    │ ← 交易所代理收集数据
-  │    - 恐慌指数               │ ← 情绪代理获取
-  │    - 各币种数据             │ ← 交易所代理获取
-  └────────────┬────────────────┘
-               │
-  ┌────────────▼────────────────┐
-  │ 2. analyze_and_signal()     │
-  │    - 生成交易信号           │ ← 信号生成代理
-  │    - 检测共振               │ ← 信号生成代理
-  │    - 保存到数据库           │ ← 数据库代理
-  │    - 发送Telegram通知       │ ← 通知代理
-  └────────────┬────────────────┘
-               │
-  ┌────────────▼────────────────┐
-  │ 3. 等待下次检查             │ ← sleep(interval)
-  └─────────────────────────────┘
-```
-
-**关键方法**:
-- `__init__(config_file)` - 初始化系统
-- `collect_market_data()` - 收集市场数据
-- `analyze_and_signal()` - 分析并生成信号
-- `run()` - 运行监控循环
-
----
-
-## 代理间通信
-
-```
-主协调代理
-    │
-    ├─→ 交易所代理
-    │       ├─→ 获取现货价格
-    │       ├─→ 获取资金费率
-    │       └─→ 获取多空比
-    │
-    ├─→ 情绪分析代理
-    │       ├─→ 获取恐慌指数 (Alternative.me API)
-    │       └─→ 综合分析市场情绪
-    │
-    ├─→ 信号生成代理
-    │       ├─→ 读取情绪分析结果
-    │       ├─→ 查询数据库历史数据
-    │       ├─→ 拐点确认
-    │       ├─→ 资金费率分位数计算
-    │       ├─→ 信号共振检测
-    │       └─→ 生成交易信号
-    │
-    ├─→ 数据库代理
-    │       ├─→ 保存市场数据
-    │       ├─→ 保存交易信号
-    │       ├─→ 查询历史数据
-    │       └───> 统计分析
-    │
-    └─→ 通知代理
-            ├─→ 格式化消息
-            └─→ Telegram推送
-```
-
----
-
-## 配置说明
-
-### 运行配置 (`config.yaml`)
-
-```yaml
-# 交易所配置
-exchange:
-  name: "okx"  # okx, binance
-
-# 监控币种
-coins:
-  - symbol: "BTC"
-    enabled: true
-    weight: 0.6
-
-# 信号阈值
-thresholds:
-  fear_buy: 25              # 恐慌买入阈值
-  greed_sell: 75            # 贪婪卖出阈值
-  funding_panic_percentile: 15   # 资金费率恐慌分位数
-  funding_greed_percentile: 85   # 资金费率贪婪分位数
-  longshort_extreme: 0.8    # 多空比极端值
-
-# 拐点确认
-reversal:
-  enabled: true
-  consecutive_periods: 2    # 需要连续几次反转
-
-# 共振配置
-resonance:
-  enabled: true
-  min_coins: 2              # 至少几个币种共振
-
-# Telegram通知
-telegram:
-  bot_token: "xxx"
-  chat_id: "xxx"
-  enabled: true
-
-# 运行参数
-runtime:
-  check_interval: 3600      # 检查间隔（秒）
-  db_file: "crypto_sentiment_v3.db"
-  log_file: "monitor.log"
-  log_level: "INFO"
-```
-
----
-
-## 扩展新代理
-
-### 添加新交易所代理
-
-1. 在 `exchanges/` 目录创建新文件（如 `bybit.py`）
-2. 继承 `ExchangeBase` 类
-3. 实现所有抽象方法
-4. 在 `exchanges/__init__.py` 的 `_exchanges` 字典中注册
-
-示例:
-```python
-from .base import ExchangeBase
-
-class BybitExchange(ExchangeBase):
-    def get_spot_price(self, symbol: str) -> Optional[float]:
-        # 实现逻辑
-        pass
-
-    def get_funding_rate(self, symbol: str) -> Optional[float]:
-        # 实现逻辑
-        pass
-
-    def get_longshort_ratio(self, symbol: str) -> Optional[Dict]:
-        # 实现逻辑
-        pass
-```
-
-### 添加新通知渠道代理
-
-1. 在 `notifiers/` 目录创建新文件（如 `discord.py`）
-2. 实现 `send()` 和 `test_connection()` 方法
-3. 在 `main.py` 中初始化时添加新通知器
-
----
-
-## 数据流示例
-
-```
-时间戳: 2025-02-02 12:00:00
-
-交易所代理 → 恐慌指数: 20 (Extreme Fear)
-交易所代理 → BTC价格: $45,234.56
-交易所代理 → BTC资金费率: -0.0150%
-交易所代理 → BTC多空比: 0.65 (65/35)
-交易所代理 → ETH价格: $3,123.45
-交易所代理 → ETH资金费率: -0.0120%
-交易所代理 → ETH多空比: 0.70 (70/30)
-
-情绪分析代理 → 整体情绪: extreme_fear
-情绪分析代理 → 恐慌状态: buy_opportunity
-情绪分析代理 → BTC资金状态: extreme_negative
-情绪分析代理 → ETH资金状态: negative
-
-信号生成代理 → BTC买入信号 (强度: 极强)
-  原因: 恐慌指数: 20, 恐慌拐点确认, 资金费率分位: 8.5%, 多空比: 0.65
-  标签: #抄底 #拐点确认
-信号生成代理 → ETH买入信号 (强度: 强)
-  原因: 恐慌指数: 20, 资金费率分位: 12.0%, 多空比: 0.70
-  标签: #观察
-
-信号生成代理 → 检测到2个币种共振
-  → BTC信号升级: 极强 (#共振)
-  → ETH信号升级: 极强 (#共振)
-
-数据库代理 → 保存市场数据
-数据库代理 → 保存BTC信号
-数据库代理 → 保存ETH信号
-
-通知代理 → 格式化消息
-通知代理 → 发送Telegram推送
-```
-
----
-
-## 性能优化
-
-### API限流处理
-- 交易所请求间隔: 0.5秒
-- 会话复用: `requests.Session()`
-- 超时控制: 10-30秒
-
-### 数据库优化
-- 时间戳索引
-- 币种索引
-- JSON存储币种数据
-
-### 错误恢复
-- 请求失败自动重试
-- 数据库操作回滚
-- 5分钟错误后重试机制
-
----
-
-## 依赖项
-
-```
-requests>=2.31.0    # HTTP请求
-PyYAML>=6.0         # 配置文件解析
-```
-
----
-
-## 日志系统
-
-日志级别:
-- DEBUG - 详细调试信息
-- INFO - 一般信息
-- WARNING - 警告信息
-- ERROR - 错误信息
-
-日志输出:
-- 控制台输出 (StreamHandler)
-- 文件输出 (FileHandler)
-
----
-
-## 版本信息
-
-**当前版本**: v3.0.0
-
-**更新日期**: 2025-02-02
-
-**作者**: Claude (Anthropic AI Assistant)
+## Code Style Guidelines
+
+### Imports
+- Standard library imports first, then third-party, then local
+- Use type hints from `typing` module: `Dict`, `List`, `Optional`
+- Relative imports for same-package modules: `from .base import ExchangeBase`
+
+### Type Annotations
+- ALL functions must have type hints for parameters and return types
+- Use `Optional[T]` for nullable values
+- Example: `def get_spot_price(self, symbol: str) -> Optional[float]:`
+
+### Naming Conventions
+- **Classes**: PascalCase (`OKXExchange`, `SentimentAnalyzer`)
+- **Functions/Methods**: snake_case (`get_spot_price`, `_format_message`)
+- **Private methods**: prefix with underscore (`_make_request`)
+- **Constants**: UPPER_SNAKE_CASE (`BASE_URL`)
+- **Variables**: snake_case (`fg_value`, `funding_pct`)
+
+### Docstrings
+- Module-level docstrings with triple quotes
+- Method docstrings use `:param` and `:return` format
+- Use Chinese for user-facing documentation
+
+### Error Handling
+- Use try-except blocks with specific exception types
+- Log errors with `logger.error()` and include `exc_info=True` when useful
+- Return `None` for API failures instead of raising
+- Database operations: call `conn.rollback()` on error
+- Always log warnings for expected failures (e.g., `logger.warning()`)
+
+### Logging
+- Define logger at module level: `logger = logging.getLogger(__name__)`
+- Use appropriate levels: `debug()`, `info()`, `warning()`, `error()`
+- Log meaningful messages that aid debugging
+
+### Code Organization
+- Use abstract base classes (`ABC`) for defining interfaces
+- Factory pattern for component creation (see `exchanges/__init__.py`)
+- Separate data collection, analysis, and notification concerns
+- Each module should have a single responsibility
+
+### API Requests
+- Use `requests.Session()` for connection pooling
+- Include timeout (10-30 seconds)
+- Implement retry logic with exponential backoff
+- Handle rate limiting with `time.sleep()` between requests
+
+### Database Operations
+- Always use parameterized queries to prevent SQL injection
+- Wrap operations in try-except with rollback
+- Use `sqlite3.Row` for dict-like row access
+- Commit explicitly after successful operations
+
+### Configuration
+- All config loaded from `config.yaml` using `PyYAML`
+- Use `config.get('key', default)` pattern for optional keys
+- Never commit sensitive values (tokens, API keys)
