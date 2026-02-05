@@ -139,18 +139,22 @@ class OKXExchange(ExchangeBase):
         """
         获取历史K线
         interval: '1D', '1H', '4H' 等
+        
+        OKX API 分页说明:
+        - after: 获取比此时间戳更早的数据（往历史方向查）
+        - before: 获取比此时间戳更新的数据（往当前方向查）
         """
         endpoint = "/api/v5/market/history-candles"
 
         # 转换时间戳（毫秒）
-        after = str(int(start_time.timestamp() * 1000))
-        before = str(int(end_time.timestamp() * 1000))
+        # 修复：从 end_time 开始往回查，获取 [start_time, end_time] 范围的数据
+        start_ms = int(start_time.timestamp() * 1000)
+        after = str(int(end_time.timestamp() * 1000))
 
         params = {
             'instId': f'{symbol}-USDT',
             'bar': interval,
-            'after': after,
-            'before': before,
+            'after': after,  # 从 end_time 开始往回查
             'limit': '300'
         }
 
@@ -162,10 +166,18 @@ class OKXExchange(ExchangeBase):
             if not data or len(data) == 0:
                 break
             
+            reached_start = False
             try:
                 for candle in data:
+                    candle_ts = int(candle[0])
+                    
+                    # 过滤：只保留 >= start_time 的数据
+                    if candle_ts < start_ms:
+                        reached_start = True
+                        continue
+                    
                     all_data.append({
-                        'timestamp': datetime.fromtimestamp(int(candle[0]) / 1000),
+                        'timestamp': datetime.fromtimestamp(candle_ts / 1000),
                         'open': float(candle[1]),
                         'high': float(candle[2]),
                         'low': float(candle[3]),
@@ -176,12 +188,19 @@ class OKXExchange(ExchangeBase):
                 print(f"解析K线数据失败: {e}")
                 break
 
+            # 如果已经到达 start_time 之前，停止获取
+            if reached_start:
+                break
+            
             # 检查是否还有更多数据
             if len(data) < 300:
                 break
             
-            # 更新after参数继续获取
+            # 更新 after 参数继续往前获取更早的数据
             params['after'] = data[-1][0]
             time.sleep(0.5)
+        
+        # 按时间升序排列（OKX 返回的是降序）
+        all_data.sort(key=lambda x: x['timestamp'])
         
         return all_data

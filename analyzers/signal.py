@@ -219,7 +219,9 @@ class SignalGenerator:
                     # 将DB时间字符串转为timestamp
                     try:
                         if isinstance(item['timestamp'], str):
-                            dt = datetime.fromisoformat(item['timestamp'])
+                            # 修复：SQLite CURRENT_TIMESTAMP 格式为空格分隔，需转换为 ISO 格式
+                            time_str = item['timestamp'].replace(' ', 'T')
+                            dt = datetime.fromisoformat(time_str)
                             if dt.tzinfo is None:
                                 dt = dt.replace(tzinfo=timezone.utc)
                             ts = dt.timestamp()
