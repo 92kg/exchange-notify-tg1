@@ -67,6 +67,11 @@ trend_strategy:
   max_fg_value: 70          # 最高恐慌指数（避免追高）
   require_price_above_ma: true  # 价格必须高于均线
 
+# 风控配置
+risk:
+  stop_loss: -15            # 止损线 (%)
+  # 注意：情绪卖出信号已禁用（回测正确率仅38%）
+
 # 拐点确认配置
 reversal:
   enabled: true

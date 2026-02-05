@@ -415,16 +415,74 @@ class EnhancedBacktester:
                             'score': buy_check['score'],
                             'reasons': buy_check['reasons']
                         })
+                
+                # 注意：不再生成主动卖出信号
+                # 回测证明情绪卖出信号无效（正确率仅38%）
+                # 实际交易中应使用止损线（如-15%）代替
         
         self.signals = signals
-        logger.info(f"✅ 生成 {len(signals)} 个增强信号")
         
-        # 按分数统计
-        high_score = sum(1 for s in signals if s['score'] >= 5)
-        mid_score = sum(1 for s in signals if 3 <= s['score'] < 5)
-        logger.info(f"   高分信号(>=5): {high_score}, 中分信号(3-4): {mid_score}")
+        # 统计
+        buy_signals = [s for s in signals if s['type'] == 'BUY']
+        sell_signals = [s for s in signals if s['type'] == 'SELL']
+        logger.info(f"✅ 生成 {len(signals)} 个信号 (买入: {len(buy_signals)}, 卖出: {len(sell_signals)})")
+        
+        # 按分数统计买入信号
+        high_score = sum(1 for s in buy_signals if s['score'] >= 5)
+        mid_score = sum(1 for s in buy_signals if 3 <= s['score'] < 5)
+        logger.info(f"   买入 - 高分(>=5): {high_score}, 中分(3-4): {mid_score}")
         
         return signals
+    
+    def _check_sell_conditions(
+        self,
+        fg_value: int,
+        fg_values: List[int],
+        fg_idx: int,
+        coin: str,
+        date: str,
+        analysis: Dict
+    ) -> Dict:
+        """
+        卖出信号检测 - 纯情绪版
+        核心理念：贪婪见顶 + 情绪反转
+        不依赖技术指标，只看市场情绪
+        """
+        result = {'valid': False, 'score': 0, 'reasons': []}
+        
+        # 条件 1: 当前处于贪婪区域 (FG > 60)
+        if fg_value < 60:
+            return result
+        
+        result['reasons'].append(f"FG={fg_value} (贪婪)")
+        result['score'] += 1
+        
+        # 条件 2: 情绪从高位开始下跌
+        if fg_idx >= 3:
+            # 检查过去3天的最高点
+            recent = fg_values[fg_idx-3:fg_idx+1]
+            max_recent = max(recent[:-1])  # 不含今天
+            
+            # 曾经达到极度贪婪 (>75) 且现在开始下跌
+            if max_recent >= 75 and fg_value < max_recent - 5:
+                result['reasons'].append(f"情绪拐点 {max_recent}->{fg_value}")
+                result['score'] += 3
+            # 曾经达到贪婪 (>65) 且连续下跌
+            elif max_recent >= 65:
+                if all(recent[i] > recent[i+1] for i in range(len(recent)-1)):
+                    result['reasons'].append(f"连续下跌 {recent[0]}->{fg_value}")
+                    result['score'] += 2
+        
+        # 条件 3: 7天前也是贪婪（持续贪婪后见顶）
+        if fg_idx >= 7:
+            fg_7d_ago = fg_values[fg_idx - 7]
+            if fg_7d_ago >= 55:
+                result['reasons'].append("持续贪婪期")
+                result['score'] += 1
+        
+        # 分数 >= 3 才生成卖出信号
+        result['valid'] = result['score'] >= 3
+        return result
     
     # ==================== 收益计算 ====================
     
@@ -441,19 +499,34 @@ class EnhancedBacktester:
         return None
     
     def calculate_returns(self) -> List[Dict]:
-        """计算收益"""
+        """计算收益（含止损分析）"""
         logger.info("开始计算收益...")
         
+        stop_loss = self.config.get('stop_loss', -15)  # 默认-15%止损
         results = []
         
         for signal in self.signals:
-            result = {**signal, 'returns': {}}
+            if signal['type'] != 'BUY':
+                continue
+                
+            result = {**signal, 'returns': {}, 'max_drawdown': 0, 'hit_stop_loss': False}
             
-            for days in self.config['hold_days']:
-                future_price = self._get_price_after_days(signal['coin'], signal['date'], days)
-                if future_price:
-                    ret = (future_price - signal['price']) / signal['price'] * 100
-                    result['returns'][f'{days}d'] = round(ret, 2)
+            # 计算持有期内每日价格
+            min_price = signal['price']
+            for day in range(1, max(self.config['hold_days']) + 1):
+                day_price = self._get_price_after_days(signal['coin'], signal['date'], day)
+                if day_price:
+                    min_price = min(min_price, day_price)
+                    
+                    # 记录特定天数的收益
+                    if day in self.config['hold_days']:
+                        ret = (day_price - signal['price']) / signal['price'] * 100
+                        result['returns'][f'{day}d'] = round(ret, 2)
+            
+            # 计算最大回撤
+            max_dd = (min_price - signal['price']) / signal['price'] * 100
+            result['max_drawdown'] = round(max_dd, 2)
+            result['hit_stop_loss'] = max_dd <= stop_loss
             
             results.append(result)
         
@@ -467,6 +540,14 @@ class EnhancedBacktester:
         if not self.results:
             return {}
         
+        buy_results = self.results  # 现在只有买入信号
+        stop_loss = self.config.get('stop_loss', -15)
+        
+        # 止损统计
+        hit_stop = sum(1 for r in buy_results if r.get('hit_stop_loss', False))
+        max_dds = [r.get('max_drawdown', 0) for r in buy_results]
+        avg_dd = sum(max_dds) / len(max_dds) if max_dds else 0
+        
         report = {
             'period': {
                 'start': self.fear_greed_data[0]['date'],
@@ -474,64 +555,68 @@ class EnhancedBacktester:
                 'days': len(self.fear_greed_data)
             },
             'signals': {
-                'total': len(self.signals),
-                'high_score': sum(1 for s in self.signals if s['score'] >= 5),
-                'mid_score': sum(1 for s in self.signals if 3 <= s['score'] < 5),
+                'total': len(buy_results),
             },
-            'performance': {}
+            'buy_performance': self._calc_performance(buy_results, "买入"),
+            'risk': {
+                'stop_loss_line': stop_loss,
+                'hit_stop_loss': hit_stop,
+                'hit_rate': round(hit_stop / len(buy_results) * 100, 1) if buy_results else 0,
+                'avg_max_drawdown': round(avg_dd, 2),
+            }
         }
-        
-        # 按分数分组统计
-        for score_group, min_score, max_score in [('高分(>=5)', 5, 100), ('中分(3-4)', 3, 5)]:
-            group_results = [r for r in self.results if min_score <= r['score'] < max_score]
-            
-            if not group_results:
-                continue
-            
-            stats = {'count': len(group_results)}
-            
-            for days in self.config['hold_days']:
-                day_key = f'{days}d'
-                returns = [r['returns'].get(day_key) for r in group_results if r['returns'].get(day_key) is not None]
-                
-                if returns:
-                    wins = sum(1 for r in returns if r > 0)
-                    stats[day_key] = {
-                        'avg_return': round(sum(returns) / len(returns), 2),
-                        'max_return': round(max(returns), 2),
-                        'min_return': round(min(returns), 2),
-                        'win_rate': round(wins / len(returns) * 100, 1),
-                        'sample_size': len(returns)
-                    }
-            
-            report['performance'][score_group] = stats
         
         self._print_report(report)
         return report
     
+    def _calc_performance(self, results: List[Dict], label: str, invert: bool = False) -> Dict:
+        """计算信号性能"""
+        stats = {'count': len(results)}
+        
+        for days in self.config['hold_days']:
+            day_key = f'{days}d'
+            returns = [r['returns'].get(day_key) for r in results if r['returns'].get(day_key) is not None]
+            
+            if returns:
+                wins = sum(1 for r in returns if r > 0)
+                stats[day_key] = {
+                    'avg_return': round(sum(returns) / len(returns), 2),
+                    'win_rate': round(wins / len(returns) * 100, 1),
+                    'sample_size': len(returns)
+                }
+        
+        return stats
+    
     def _print_report(self, report: Dict):
         """打印报告"""
         print("\n" + "=" * 70)
-        print("📊 增强版回测报告")
+        print("📊 增强版回测报告 (V8 趋势策略 + 止损)")
         print("=" * 70)
         
         print(f"\n📅 回测周期: {report['period']['start']} ~ {report['period']['end']} ({report['period']['days']} 天)")
-        print(f"📈 信号总数: {report['signals']['total']} (高分: {report['signals']['high_score']}, 中分: {report['signals']['mid_score']})")
+        print(f"📈 买入信号: {report['signals']['total']} 次")
         
+        # 买入信号统计
         print("\n" + "-" * 70)
-        print("💰 收益统计（按信号质量分组）")
+        print("📥 买入信号效果")
         print("-" * 70)
-        
-        for group, stats in report['performance'].items():
-            print(f"\n【{group}】共 {stats['count']} 次信号")
-            
+        buy_stats = report.get('buy_performance', {})
+        if buy_stats.get('count', 0) > 0:
             for days in self.config['hold_days']:
                 day_key = f'{days}d'
-                if day_key in stats:
-                    s = stats[day_key]
+                if day_key in buy_stats:
+                    s = buy_stats[day_key]
                     emoji = "🟢" if s['win_rate'] >= 55 else ("🟡" if s['win_rate'] >= 45 else "🔴")
                     print(f"  {days}天: 平均 {s['avg_return']:+.2f}% | "
                           f"{emoji} 胜率 {s['win_rate']:.1f}% ({s['sample_size']}样本)")
+        
+        # 风险统计
+        print("\n" + "-" * 70)
+        print("⚠️ 风险统计（止损线: {}%）".format(report['risk']['stop_loss_line']))
+        print("-" * 70)
+        risk = report['risk']
+        print(f"  触发止损: {risk['hit_stop_loss']} 次 ({risk['hit_rate']:.1f}%)")
+        print(f"  平均最大回撤: {risk['avg_max_drawdown']:.2f}%")
         
         print("\n" + "=" * 70)
     
