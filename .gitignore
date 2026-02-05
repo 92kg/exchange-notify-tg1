@@ -39,3 +39,5 @@ wheels/
 .env.*.local
 config.yaml
 debug.py
+/.cache
+*.json

@@ -1,17 +1,18 @@
-# 加密货币情绪监控系统 v3.1
+# 加密货币情绪监控系统 v3.3
 
 多交易所、多币种支持的加密货币情绪量化监控系统
 
 ## 功能特性
 
 ### 核心功能
+- ✅ **双策略模式**：趋势跟随(推荐) / 恐慌买入
 - ✅ 多维度情绪量化（恐慌指数、资金费率、多空比）
+- ✅ 技术分析（MA7/MA30 趋势确认）
+- ✅ 价格数据缓存（减少 API 调用）
 - ✅ 情绪拐点确认（防止过早入场）
-- ✅ 资金费率分位数（自适应牛熊市）
-- ✅ 信号共振检测（多币种验证）
-- ✅ Telegram实时推送
-- ✅ SQLite3数据持久化
-- ✅ 历史信号回测（自动计算收益率）
+- ✅ Telegram 实时推送
+- ✅ SQLite3 数据持久化
+- ✅ 历史信号回测（5.5年数据验证）
 
 ### 交易所支持
 - ✅ OKX
@@ -42,13 +43,19 @@ coins:
   - symbol: "ETH"
     enabled: true
 
-# 策略开关（避免过度拟合）
+# 策略配置
 strategy:
-  use_fear_greed: true      # 使用恐慌指数（核心）
-  use_funding_percentile: true  # 使用资金费率分位数
-  use_longshort: false       # 使用多空比（容易被操纵）
-  use_reversal: true        # 使用拐点确认（推荐）
-  use_resonance: false       # 使用共振检测
+  mode: "trend"              # 策略模式: trend(推荐) / fear_buy
+  use_fear_greed: true       # 使用恐慌指数
+  use_funding_percentile: true
+  use_reversal: true
+  use_sell_signal: false     # 禁用卖出信号
+
+# 趋势策略参数
+trend_strategy:
+  ma_short: 7                # 短期均线
+  ma_long: 30                # 长期均线
+  max_fg_value: 70           # 避免追高
 
 telegram:
   bot_token: "你的Bot_Token"
@@ -270,6 +277,13 @@ v3.2.0 (2026-02-03)
 MIT License
 
 ## 更新日志
+
+### v3.3.0 (2026-02-06)
+- 🚀 **新增趋势策略 (V8)**：回测胜率 57%，30天收益 +5.28%
+- 📊 新增策略模式选择：`strategy.mode: "trend"` / `"fear_buy"`
+- 📁 新增价格数据缓存：减少 API 调用
+- 📈 新增技术分析模块：`analyzers/trend.py`
+- 📝 更新策略指南文档
 
 ### v3.2.0 (2026-02-03)
 - 🛡️ 添加策略复杂度评估和风险预警

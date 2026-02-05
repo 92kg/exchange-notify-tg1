@@ -1,11 +1,13 @@
 """
 信号生成器
 根据情绪分析生成交易信号
+支持两种策略模式: fear_buy (恐慌买入) 和 trend (趋势跟随)
 """
 
 from typing import Dict, List, Optional
 import logging
 from datetime import datetime, timezone
+from .trend import TechnicalAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,17 @@ class SignalGenerator:
         self.resonance_config = config['resonance']
         self.strategy_config = config.get('strategy', {})
         self.windows_config = config.get('windows', {})
+        
+        # 策略模式: "trend" (推荐) 或 "fear_buy"
+        self.strategy_mode = self.strategy_config.get('mode', 'fear_buy')
+        
+        # 初始化趋势分析模块 (仅在趋势模式下)
+        if self.strategy_mode == 'trend':
+            self.trend_analyzer = TechnicalAnalysis(config)
+            logger.info("📈 使用趋势跟随策略 (V8)")
+        else:
+            self.trend_analyzer = None
+            logger.info("📉 使用恐慌买入策略")
     
     def generate_signals(self, data: dict) -> List[Dict]:
         """
@@ -83,16 +96,62 @@ class SignalGenerator:
     ) -> Optional[Dict]:
         """
         为单个币种生成信号
+        根据策略模式选择不同逻辑
         """
-        # 买入信号判断
+        # 趋势策略模式
+        if self.strategy_mode == 'trend':
+            return self._generate_trend_signal(coin, coin_data, fg_value, full_data)
+        
+        # 恐慌买入策略模式 (旧逻辑)
         if fg_value < self.thresholds['fear_buy']:
             return self._generate_buy_signal(coin, coin_data, fg_value, full_data, current_timestamp)
         
-        # 卖出信号判断
+        # 卖出信号（可通过配置禁用）
         elif fg_value > self.thresholds['greed_sell']:
-            return self._generate_sell_signal(coin, coin_data, fg_value, full_data, current_timestamp)
+            if self.strategy_config.get('use_sell_signal', True):
+                return self._generate_sell_signal(coin, coin_data, fg_value, full_data, current_timestamp)
         
         return None
+    
+    def _generate_trend_signal(
+        self, 
+        coin: str, 
+        coin_data: dict, 
+        fg_value: int,
+        full_data: dict
+    ) -> Optional[Dict]:
+        """生成趋势跟随信号 (V8 策略)"""
+        
+        current_price = coin_data.get('price')
+        if not current_price:
+            return None
+        
+        # 使用趋势分析模块检查信号
+        result = self.trend_analyzer.check_trend_signal(coin, current_price, fg_value)
+        
+        if not result['valid']:
+            return None
+        
+        strength = "强" if result['quality'] == 'high' else "中等"
+        tags = ["#趋势", "#金叉"] if result['score'] >= 6 else ["#趋势"]
+        
+        # 添加资金费率信息
+        if self.strategy_config.get('use_funding_percentile', True):
+            funding = coin_data.get('funding_rate')
+            if funding is not None:
+                funding_pct = self._calculate_funding_percentile(coin, funding)
+                if funding_pct and funding_pct < self.thresholds['funding_panic_percentile']:
+                    result['reasons'].append(f"资金费率: {funding_pct:.1f}%分位")
+                    strength = "极强"
+                    tags.append("#资金恐慌")
+        
+        return {
+            'coin': coin,
+            'type': 'BUY',
+            'strength': strength,
+            'reasons': result['reasons'],
+            'tags': tags
+        }
     
     def _generate_buy_signal(
         self, 

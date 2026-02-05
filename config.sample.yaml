@@ -35,7 +35,7 @@ coins:
 # 信号阈值配置
 thresholds:
   fear_buy: 25              # 恐慌买入阈值
-  greed_sell: 75            # 贪婪卖出阈值
+  greed_sell: 75            # 贪婪卖出阈值（已禁用卖出信号）
   funding_panic_percentile: 15   # 资金费率恐慌分位数
   funding_greed_percentile: 85   # 资金费率贪婪分位数
   longshort_extreme: 0.8    # 多空比极端值
@@ -46,19 +46,31 @@ windows:
   funding_history_hours: 168  # 资金费率分位数使用的历史窗口(小时)
 
 # 策略开关（控制使用哪些条件）
-# 重要度排序: 恐慌指数(核心) > 拐点确认 > 资金费率 > 多空比 > 共振检测
 # 详情请参考 STRATEGY_GUIDE.md
 strategy:
-  use_fear_greed: true      # 使用恐慌指数（核心条件，禁用则系统无法工作）
-  use_funding_percentile: true  # 使用资金费率分位数（中等重要）
-  use_longshort: false       # 使用多空比（较低重要，容易被操纵）
-  use_reversal: true        # 使用拐点确认（强烈推荐，防止过早入场）
-  use_resonance: false       # 使用共振检测（较低重要，币种少时无效）
+  # 策略模式: "fear_buy" = 恐慌买入(回测胜率低), "trend" = 趋势跟随(推荐)
+  mode: "trend"
+  
+  # 通用开关
+  use_fear_greed: true      # 使用恐慌指数
+  use_funding_percentile: true  # 使用资金费率分位数
+  use_longshort: false       # 使用多空比（容易被操纵）
+  use_reversal: true        # 使用拐点确认
+  use_resonance: false       # 使用共振检测
+  use_sell_signal: false    # 禁用卖出信号（回测表现差）
+
+# 趋势策略配置 (mode: "trend")
+trend_strategy:
+  ma_short: 7               # 短期均线周期
+  ma_long: 30               # 长期均线周期
+  min_7d_change: 0          # 最小7天涨幅要求 (%)
+  max_fg_value: 70          # 最高恐慌指数（避免追高）
+  require_price_above_ma: true  # 价格必须高于均线
 
 # 拐点确认配置
 reversal:
   enabled: true
-  consecutive_periods: 2    # 需要连续几次反转
+  consecutive_periods: 2    # 需要连续2次反转确认
 
 # 共振配置
 resonance:
