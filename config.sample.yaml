@@ -69,8 +69,10 @@ trend_strategy:
 
 # 风控配置
 risk:
-  stop_loss: -15            # 止损线 (%)
-  # 注意：情绪卖出信号已禁用（回测正确率仅38%）
+  stop_loss_type: "trailing"  # fixed / trailing
+  stop_loss_pct: -15          # 止损比例 (%)
+  initial_stop: -20           # 初始止损（刚买入时使用）
+  notify_on_stop: true        # 止损时发送通知
 
 # 拐点确认配置
 reversal:

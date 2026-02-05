@@ -645,7 +645,7 @@ class EnhancedBacktester:
 def main():
     config = {
         'thresholds': {
-            'fear_buy': 15,     # 极端恐慌阈值（更严格）
+            'fear_buy': 15,
             'greed_sell': 75,
         },
         'reversal': {
@@ -675,5 +675,133 @@ def main():
         print("\n📁 报告已保存到 backtest_enhanced_report.json")
 
 
+def optimize_stop_loss():
+    """优化止损参数"""
+    print("\n" + "=" * 70)
+    print("🔍 止损参数优化回测")
+    print("=" * 70)
+    
+    config = {
+        'thresholds': {'fear_buy': 15, 'greed_sell': 75},
+        'reversal': {'enabled': True, 'consecutive_periods': 2},
+        'ma': {'enabled': True, 'short_period': 7, 'long_period': 30},
+        'filters': {'max_drop_7d': -30, 'require_price_recovery': True},
+        'coins': ['BTC', 'ETH'],
+        'hold_days': [7, 14, 30],
+    }
+    
+    backtester = EnhancedBacktester(config)
+    
+    # 获取数据
+    if not backtester.fetch_all_data(2000):
+        return
+    
+    backtester.simulate_signals()
+    
+    # 测试不同止损比例
+    stop_levels = [-5, -8, -10, -12, -15, -18, -20, -25]
+    
+    results = []
+    
+    for stop_loss in stop_levels:
+        backtester.config['stop_loss'] = stop_loss
+        backtester.calculate_returns()
+        
+        # 统计
+        hit_count = sum(1 for r in backtester.results if r.get('hit_stop_loss', False))
+        hit_rate = hit_count / len(backtester.results) * 100 if backtester.results else 0
+        
+        # 计算如果止损后不持有的收益
+        total_return = 0
+        count = 0
+        for r in backtester.results:
+            ret_30d = r['returns'].get('30d')
+            if ret_30d is not None:
+                if r.get('hit_stop_loss'):
+                    # 止损执行，收益为止损线
+                    total_return += stop_loss
+                else:
+                    total_return += ret_30d
+                count += 1
+        
+        avg_return = total_return / count if count else 0
+        
+        results.append({
+            'stop_loss': stop_loss,
+            'hit_rate': round(hit_rate, 1),
+            'avg_return_with_stop': round(avg_return, 2),
+        })
+    
+    # 打印结果
+    print("\n" + "-" * 70)
+    print("📊 固定止损测试结果 (30天持有期)")
+    print("-" * 70)
+    print(f"{'止损线':>10} | {'触发率':>10} | {'平均收益(含止损)':>20}")
+    print("-" * 50)
+    
+    best = None
+    best_return = -999
+    
+    for r in results:
+        print(f"{r['stop_loss']:>10}% | {r['hit_rate']:>9}% | {r['avg_return_with_stop']:>19}%")
+        if r['avg_return_with_stop'] > best_return:
+            best_return = r['avg_return_with_stop']
+            best = r
+    
+    print("-" * 50)
+    print(f"✅ 最佳止损线: {best['stop_loss']}% (收益 {best['avg_return_with_stop']}%)")
+    
+    # 测试动态止损（Trailing Stop）
+    print("\n" + "-" * 70)
+    print("📊 动态止损测试 (Trailing Stop)")
+    print("-" * 70)
+    
+    trailing_levels = [-5, -8, -10, -12, -15]
+    
+    for trail_pct in trailing_levels:
+        total_return = 0
+        count = 0
+        
+        for signal in backtester.signals:
+            if signal['type'] != 'BUY':
+                continue
+            
+            buy_price = signal['price']
+            max_price = buy_price
+            exit_price = None
+            
+            # 模拟每天价格
+            for day in range(1, 31):
+                day_price = backtester._get_price_after_days(signal['coin'], signal['date'], day)
+                if not day_price:
+                    continue
+                
+                max_price = max(max_price, day_price)
+                trailing_stop = max_price * (1 + trail_pct / 100)
+                
+                if day_price <= trailing_stop:
+                    exit_price = day_price
+                    break
+            
+            if exit_price is None:
+                # 持有到30天
+                exit_price = backtester._get_price_after_days(signal['coin'], signal['date'], 30)
+            
+            if exit_price:
+                ret = (exit_price - buy_price) / buy_price * 100
+                total_return += ret
+                count += 1
+        
+        avg_return = total_return / count if count else 0
+        print(f"  Trailing {trail_pct}%: 平均收益 {avg_return:+.2f}%")
+    
+    print("\n" + "=" * 70)
+
+
 if __name__ == '__main__':
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == '--optimize-stop':
+        optimize_stop_loss()
+    else:
+        main()
+

@@ -1,6 +1,7 @@
 """
-加密货币情绪监控系统 v3.0
+加密货币情绪监控系统 v3.4
 模块化、多交易所、多币种支持
+支持动态止损 (Trailing Stop)
 """
 
 import yaml
@@ -13,6 +14,7 @@ from exchanges import ExchangeFactory
 from database.manager import DatabaseManager
 from analyzers.sentiment import SentimentAnalyzer
 from analyzers.signal import SignalGenerator
+from analyzers.position_tracker import PositionTracker
 from notifiers.telegram import TelegramNotifier
 from utils.helpers import format_price, format_percentage
 from datetime import timedelta
@@ -32,7 +34,7 @@ class CryptoSentimentMonitor:
         # 初始化组件
         self.logger = logging.getLogger(__name__)
         self.logger.info("="*60)
-        self.logger.info("加密货币情绪监控系统 v3.0 初始化中...")
+        self.logger.info("加密货币情绪监控系统 v3.4 初始化中...")
         self.logger.info("="*60)
         
         try:
@@ -48,6 +50,11 @@ class CryptoSentimentMonitor:
             self.sentiment_analyzer = SentimentAnalyzer(self.config, self.db)
             self.signal_generator = SignalGenerator(self.config, self.db)
             self.logger.info("✅ 分析器已加载")
+            
+            # 持仓追踪器（动态止损）
+            self.position_tracker = PositionTracker(self.config, self.db)
+            risk_config = self.config.get('risk', {})
+            self.logger.info(f"✅ 持仓追踪: {risk_config.get('stop_loss_type', 'fixed')} 止损 {risk_config.get('stop_loss_pct', -15)}%")
             
             # 通知器
             if self.config['telegram']['enabled']:
@@ -238,17 +245,21 @@ class CryptoSentimentMonitor:
         # 收集数据
         data = self.collect_market_data()
         
+        # 检查止损
+        self._check_stop_loss(data)
+        
         # 生成信号
         self.logger.info("")
         self.logger.info("开始生成交易信号...")
         
+        signals = []
         try:
             signals = self.signal_generator.generate_signals(data)
             
             if signals:
                 self.logger.info(f"✅ 生成了 {len(signals)} 个信号")
                 
-                # 保存信号
+                # 保存信号并添加持仓
                 for signal in signals:
                     try:
                         self.db.save_signal(signal, data)
@@ -257,6 +268,16 @@ class CryptoSentimentMonitor:
                             f"强度:{signal['strength']} "
                             f"标签:{' '.join(signal['tags'])}"
                         )
+                        
+                        # 买入信号时添加持仓追踪
+                        if signal['type'] == 'BUY':
+                            price = data['coins'][signal['coin']].get('price')
+                            if price:
+                                self.position_tracker.add_position(
+                                    signal['coin'], 
+                                    price, 
+                                    signal.get('reasons', [])
+                                )
                     except Exception as e:
                         self.logger.error(f"保存信号失败: {e}")
                 
@@ -276,6 +297,37 @@ class CryptoSentimentMonitor:
         self.logger.info("="*60)
         
         return data, signals
+    
+    def _check_stop_loss(self, data: dict):
+        """检查持仓止损"""
+        # 收集当前价格
+        prices = {}
+        for coin, coin_data in data.get('coins', {}).items():
+            price = coin_data.get('price')
+            if price:
+                prices[coin] = price
+        
+        if not prices:
+            return
+        
+        # 检查止损触发
+        stopped = self.position_tracker.update_prices(prices)
+        
+        # 发送止损通知
+        if stopped and self.notifier:
+            for s in stopped:
+                msg = (
+                    f"🛑 <b>止损触发</b>\n\n"
+                    f"币种: {s['coin']}\n"
+                    f"买入价: ${s['entry_price']:.2f}\n"
+                    f"止损价: ${s['stop_price']:.2f}\n"
+                    f"收益: {s['return_pct']:+.1f}%\n"
+                    f"最高价: ${s['max_price']:.2f}\n"
+                    f"回撤: {s['drawdown']:.1f}%\n\n"
+                    f"⚠️ 建议执行止损操作"
+                )
+                self.notifier.send(msg)
+                self.logger.warning(f"🛑 已发送止损通知: {s['coin']}")
     
     def _format_message(self, data: dict, signals: list) -> str:
         """格式化Telegram消息"""
