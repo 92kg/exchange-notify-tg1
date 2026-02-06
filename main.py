@@ -326,7 +326,7 @@ class CryptoSentimentMonitor:
                     else:
                         self.logger.error("❌ Telegram通知发送失败")
             else:
-                self.logger.info("ℹ️ 当前无交易信号")
+                self.logger.debug("ℹ️ 当前无交易信号")
         
         except Exception as e:
             self.logger.error(f"❌ 信号生成失败: {e}", exc_info=True)
