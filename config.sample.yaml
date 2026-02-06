@@ -104,7 +104,7 @@ glassnode:
 
 # 运行配置
 runtime:
-  check_interval: 3600      # 检查间隔（秒）
+  check_interval: 300       # 检查间隔（秒）- 建议 300s (5分钟) 以便及时触发止损
   db_file: "crypto_sentiment_v3.db"
   log_file: "monitor.log"
   log_level: "INFO"         # DEBUG, INFO, WARNING, ERROR
