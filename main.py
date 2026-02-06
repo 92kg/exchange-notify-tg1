@@ -491,6 +491,9 @@ class CryptoSentimentMonitor:
                 # 执行回测
                 self.run_backtest(backtest_days)
                 
+                # 心跳检测
+                self._check_heartbeat()
+                
                 # 等待下次检查
                 self.logger.info(f"\n⏳ 等待 {interval//60} 分钟后下次检查...\n")
                 time.sleep(interval)
@@ -563,6 +566,49 @@ class CryptoSentimentMonitor:
             results['is_successful'] = 1 if results['return_7d'] > 0 else 0
         
         return results
+
+    def _check_heartbeat(self):
+        """心跳检测"""
+        current_time = datetime.now()
+        
+        # 初始化上次心跳时间
+        if not hasattr(self, '_last_heartbeat'):
+            self._last_heartbeat = current_time
+            return
+
+        # 每小时心跳日志
+        if (current_time - self._last_heartbeat).total_seconds() >= 3600:
+            self.logger.info(f"❤️ 系统心跳正常 | 运行中 | {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            self._last_heartbeat = current_time
+            
+            # (可选) 每天 08:00 发送每日报告
+            if current_time.hour == 8 and current_time.minute < 10:
+                if not hasattr(self, '_last_daily_report') or (current_time - self._last_daily_report).total_seconds() > 3600:
+                    self._send_daily_report()
+                    self._last_daily_report = current_time
+
+    def _send_daily_report(self):
+        """发送每日状态报告"""
+        if not self.notifier:
+            return
+            
+        try:
+            # 获取资金账户余额 (示例，仅BTC)
+            btc_bal = self.exchange.get_balance('BTC') if hasattr(self.exchange, 'get_balance') else 0
+            usdt_bal = self.exchange.get_balance('USDT') if hasattr(self.exchange, 'get_balance') else 0
+            
+            msg = (
+                f"📅 <b>每日状态报告</b>\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                f"状态: ✅ 运行正常\n"
+                f"账户余额:\n"
+                f"BTC: {btc_bal:.4f}\n"
+                f"USDT: {usdt_bal:.2f}\n"
+            )
+            self.notifier.send(msg)
+            self.logger.info("已发送每日报告")
+        except Exception as e:
+            self.logger.error(f"发送每日报告失败: {e}")
 
 
 def show_statistics():

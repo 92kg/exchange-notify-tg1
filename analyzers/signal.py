@@ -19,7 +19,8 @@ class SignalGenerator:
         self.db = db
         self.thresholds = config['thresholds']
         self.reversal_config = config['reversal']
-        self.resonance_config = config['resonance']
+        # Fix: Resonance is optional
+        self.resonance_config = config.get('resonance', {'enabled': False})
         self.strategy_config = config.get('strategy', {})
         self.windows_config = config.get('windows', {})
         
