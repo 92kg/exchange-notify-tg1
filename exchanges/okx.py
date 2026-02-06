@@ -5,6 +5,10 @@ OKX交易所API实现
 
 import requests
 import time
+import hmac
+import base64
+import hashlib
+import json
 from datetime import datetime
 from typing import Dict, List, Optional
 from .base import ExchangeBase
@@ -20,13 +24,70 @@ class OKXExchange(ExchangeBase):
         self.session.headers.update({
             'Content-Type': 'application/json'
         })
+        
+        # API Keys
+        self.api_key = config.get('api_key', '')
+        self.api_secret = config.get('api_secret', '')
+        self.passphrase = config.get('api_passphrase', '')
     
-    def _make_request(self, endpoint: str, params: dict = None, max_retries=3) -> Optional[list]:
+    def _get_timestamp(self) -> str:
+        """获取ISO格式时间戳"""
+        return datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
+        
+    def _sign(self, timestamp: str, method: str, request_path: str, body: str = '') -> str:
+        """生成签名"""
+        if not self.api_secret:
+            return ""
+            
+        message = timestamp + method + request_path + body
+        mac = hmac.new(
+            bytes(self.api_secret, encoding='utf8'),
+            bytes(message, encoding='utf-8'),
+            digestmod=hashlib.sha256
+        )
+        return base64.b64encode(mac.digest()).decode()
+    
+    def _make_request(self, endpoint: str, params: dict = None, method: str = 'GET', max_retries=3) -> Optional[list]:
         """统一请求处理"""
         url = f"{self.BASE_URL}{endpoint}"
+        
+        # 准备请求头
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        # 签名逻辑 (如果配置了API Key)
+        if self.api_key and self.passphrase:
+            timestamp = self._get_timestamp()
+            
+            # 处理参数
+            request_path = endpoint
+            body = ''
+            
+            if method == 'GET' and params:
+                query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+                request_path = f"{endpoint}?{query_string}"
+            elif method == 'POST' and params:
+                body = json.dumps(params)
+            
+            # 生成签名
+            signature = self._sign(timestamp, method, request_path, body)
+            
+            headers.update({
+                'OK-ACCESS-KEY': self.api_key,
+                'OK-ACCESS-SIGN': signature,
+                'OK-ACCESS-TIMESTAMP': timestamp,
+                'OK-ACCESS-PASSPHRASE': self.passphrase
+            })
+
         for attempt in range(max_retries):
             try:
-                response = self.session.get(url, params=params, timeout=30)
+                if method == 'GET':
+                    response = self.session.get(url, params=params, headers=headers, timeout=30)
+                else:
+                    response = self.session.post(url, json=params, headers=headers, timeout=30)
+                    
                 response.raise_for_status()
                 data = response.json()
 
@@ -36,21 +97,18 @@ class OKXExchange(ExchangeBase):
                     return data
                 else:
                     msg = data.get('msg') if isinstance(data, dict) else "未知响应格式"
-                    print(f"OKX API错误: {msg}")
+                    # print(f"OKX API错误: {msg}")  # 调试用
                     return None
             except requests.exceptions.RequestException as e:
                 if attempt < max_retries - 1:
-                    print(f"OKX请求失败，重试 {attempt + 1}/{max_retries}: {e}")
                     time.sleep(2)
                 else:
-                    print(f"OKX请求失败: {e}")
+                    print(f"OKX请求失败 ({endpoint}): {e}")
                     return None
             except Exception as e:
                 if attempt < max_retries - 1:
-                    print(f"OKX异常，重试 {attempt + 1}/{max_retries}: {e}")
                     time.sleep(2)
                 else:
-                    print(f"OKX异常: {e}")
                     return None
         return None
     def get_spot_price(self, symbol: str) -> Optional[float]:
@@ -204,3 +262,34 @@ class OKXExchange(ExchangeBase):
         all_data.sort(key=lambda x: x['timestamp'])
         
         return all_data
+
+    def get_positions(self) -> List[Dict]:
+        """
+        获取当前持仓
+        """
+        endpoint = "/api/v5/account/positions"
+        # instType: MARGIN, SWAP, FUTURES, OPTION
+        # 这里默认获取所有类型
+        params = {}
+        
+        data = self._make_request(endpoint, params, method='GET')
+        
+        positions = []
+        if data:
+            for p in data:
+                try:
+                    positions.append({
+                        'symbol': p['instId'].split('-')[0],
+                        'instId': p['instId'],
+                        'size': float(p['pos']),  # 持仓数量
+                        'entry_price': float(p['avgPx']), # 开仓均价
+                        'current_price': float(p.get('lastPx', 0)), # 最新价
+                        'unrealized_pnl': float(p['upl']), # 未实现盈亏
+                        'pnl_ratio': float(p.get('uplRatio', 0)) * 100, # 盈亏率 %
+                        'side': p['posSide'], # long/short/net
+                        'type': p['instType'] # SWAP/MARGIN
+                    })
+                except Exception as e:
+                    print(f"解析持仓数据失败: {e}")
+                    
+        return positions

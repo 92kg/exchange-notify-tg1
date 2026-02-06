@@ -259,25 +259,62 @@ class CryptoSentimentMonitor:
             if signals:
                 self.logger.info(f"✅ 生成了 {len(signals)} 个信号")
                 
-                # 保存信号并添加持仓
+                # 保存信号并处理持仓逻辑
                 for signal in signals:
                     try:
+                        # 检查是否为加仓机会
+                        is_add = False
+                        if signal['type'] == 'BUY':
+                            pos = self.position_tracker.get_position(signal['coin'])
+                            # 如果已有持仓
+                            if pos:
+                                pyramiding_config = self.config.get('position', {}).get('pyramiding', {})
+                                if pyramiding_config.get('enabled', False):
+                                    # 检查浮盈是否满足加仓条件
+                                    profit_pct = pos.get('return_pct', 0)
+                                    min_profit = pyramiding_config.get('min_profit_pct', 5.0)
+                                    
+                                    if profit_pct >= min_profit:
+                                        signal['type'] = 'ADD'  # 升级为加仓信号
+                                        signal['reasons'].append(f"浮盈加仓(当前收益{profit_pct:.1f}%)")
+                                        is_add = True
+                                    else:
+                                        # 有持仓但未达到加仓条件，标记为HOLD（仅日志，不存信号库或按需处理）
+                                        # 这里选择不保存重复信号，避免干扰
+                                        self.logger.info(f"  {signal['coin']} 已有持仓且未达加仓浮盈({profit_pct:.1f}%)，跳过")
+                                        continue
+                                else:
+                                    # 未开启加仓，跳过
+                                    self.logger.info(f"  {signal['coin']} 已有持仓，跳过")
+                                    continue
+
                         self.db.save_signal(signal, data)
+                        log_icon = "➕" if is_add else " "
                         self.logger.info(
-                            f"  {signal['coin']} {signal['type']} "
+                            f"{log_icon} {signal['coin']} {signal['type']} "
                             f"强度:{signal['strength']} "
                             f"标签:{' '.join(signal['tags'])}"
                         )
                         
-                        # 买入信号时添加持仓追踪
-                        if signal['type'] == 'BUY':
+                        # 买入或加仓信号时更新持仓
+                        if signal['type'] in ['BUY', 'ADD']:
                             price = data['coins'][signal['coin']].get('price')
                             if price:
-                                self.position_tracker.add_position(
-                                    signal['coin'], 
-                                    price, 
-                                    signal.get('reasons', [])
-                                )
+                                # add_position 内部会自动处理加仓逻辑（更新均价或仅记录）
+                                # 目前简单处理：如果是新开仓则添加，如果是加仓也调用add_position刷新止损基准或不做操作
+                                # 考虑到 PositionTracker 当前逻辑可能不支持复杂仓位合并，我们暂时只更新追踪
+                                if is_add:
+                                     # 对于加仓，我们可能希望重置止损线或者更新平均成本
+                                     # 简单起见，加仓也是一种"买入"，让 PositionTracker 决定如何处理
+                                     # 假设 PositionTracker 目前主要是追踪初始的一笔，这里我们暂不改变持仓成本逻辑
+                                     # 仅发送信号。如果需要改成本，需要升级 PositionTracker。
+                                     pass 
+                                else:
+                                    self.position_tracker.add_position(
+                                        signal['coin'], 
+                                        price, 
+                                        signal.get('reasons', [])
+                                    )
                     except Exception as e:
                         self.logger.error(f"保存信号失败: {e}")
                 

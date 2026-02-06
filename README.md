@@ -66,12 +66,17 @@ telegram:
 ```
 
 ### 3. 运行系统
+
+**Windows (推荐):**
+双击 `start.bat` 即可一键启动（自动创建虚拟环境并安装依赖）。
+
+**命令行:**
 ```bash
 # 启动监控系统
 python main.py
 
-# 查看回测统计和过拟合分析
-python main.py --stats
+# 查看回测统计
+python backtest.py
 ```
 
 ## 策略配置指南

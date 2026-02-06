@@ -74,6 +74,13 @@ risk:
   initial_stop: -20           # 初始止损（刚买入时使用）
   notify_on_stop: true        # 止损时发送通知
 
+# 仓位管理 (Pyramiding)
+position:
+  pyramiding:
+    enabled: true             # 是否允许盈利加仓
+    min_profit_pct: 5.0       # 加仓门槛：持仓浮盈 > 5%
+    max_count: 3              # 最大加仓次数
+
 # 拐点确认配置
 reversal:
   enabled: true
