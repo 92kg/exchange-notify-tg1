@@ -48,7 +48,7 @@ class CryptoSentimentMonitor:
             
             # 分析器
             self.sentiment_analyzer = SentimentAnalyzer(self.config, self.db)
-            self.signal_generator = SignalGenerator(self.config, self.db)
+            self.signal_generator = SignalGenerator(self.config, self.db, self.exchange)
             self.logger.info("✅ 分析器已加载")
             
             # 持仓追踪器（动态止损）

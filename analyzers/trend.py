@@ -59,14 +59,15 @@ class PriceCache:
 class TechnicalAnalysis:
     """技术分析工具"""
     
-    def __init__(self, config: dict = None):
+    def __init__(self, config: dict = None, exchange = None):
         self.config = config or {}
         self.cache = PriceCache()
         self.session = requests.Session()
+        self.exchange = exchange
         self.price_data = {}  # {coin: [{date, price}, ...]}
     
     def fetch_price_history(self, coin: str, days: int = 60) -> List[Dict]:
-        """获取历史价格（带缓存）"""
+        """获取历史价格（优先使用交易所数据）"""
         # 检查缓存
         if self.cache.is_valid(coin, 'price', max_age_hours=6):
             cached = self.cache.load(coin, 'price')
@@ -76,6 +77,36 @@ class TechnicalAnalysis:
         
         logger.info(f"获取 {coin} 历史价格...")
         
+        # 1. 优先使用交易所 API
+        if self.exchange:
+            try:
+                end_time = datetime.now()
+                start_time = end_time - timedelta(days=days + 5) # 多取几天防缺失
+                
+                # OKX/Binance 均支持 1D
+                klines = self.exchange.get_historical_klines(coin, '1D', start_time, end_time)
+                
+                if klines and len(klines) >= days:
+                    records = []
+                    for item in klines:
+                        # 兼容处理: 交易所返回的是 timestamp 对象，需转为字符串 date
+                        dt = item['timestamp']
+                        records.append({
+                            'date': dt.strftime('%Y-%m-%d'),
+                            'close': float(item['close'])
+                        })
+                    
+                    # 确保按时间升序
+                    records.sort(key=lambda x: x['date'])
+                    
+                    # 缓存
+                    self.cache.save(coin, 'price', records)
+                    self.price_data[coin] = records
+                    return records
+            except Exception as e:
+                logger.warning(f"交易所获取K线失败: {e}, 尝试备用 API")
+        
+        # 2. 备用: CryptoCompare (有 Rate Limit 限制)
         url = "https://min-api.cryptocompare.com/data/v2/histoday"
         params = {
             'fsym': coin.upper(),

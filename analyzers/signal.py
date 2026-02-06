@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 class SignalGenerator:
     """信号生成器"""
     
-    def __init__(self, config: dict, db):
+    def __init__(self, config: dict, db, exchange=None):
         self.config = config
         self.db = db
+        self.exchange = exchange
         self.thresholds = config['thresholds']
         self.reversal_config = config['reversal']
         # Fix: Resonance is optional
@@ -29,7 +30,7 @@ class SignalGenerator:
         
         # 初始化趋势分析模块 (仅在趋势模式下)
         if self.strategy_mode == 'trend':
-            self.trend_analyzer = TechnicalAnalysis(config)
+            self.trend_analyzer = TechnicalAnalysis(config, exchange)
             logger.info("📈 使用趋势跟随策略 (V8)")
         else:
             self.trend_analyzer = None
