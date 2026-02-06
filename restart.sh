@@ -1,5 +1,6 @@
 #!/bin/bash
 # 加密货币情绪监控 - 重启脚本
+# 兼容 CentOS 7 / Ubuntu
 
 # 获取脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,25 +10,19 @@ echo "=========================================="
 echo "  加密货币情绪监控 - 重启服务"
 echo "=========================================="
 
-# 1. 环境检查与配置
+# 1. 环境检查
 VENV_DIR="venv"
 
 if [ ! -d "$VENV_DIR" ]; then
-    echo "[Info] 未检测到虚拟环境，正在创建..."
-    python3 -m venv "$VENV_DIR"
-    if [ $? -ne 0 ]; then
-        echo "❌ 创建虚拟环境失败，请检查 python3 是否安装"
-        exit 1
-    fi
-    echo "[Info] 安装依赖..."
-    "$VENV_DIR/bin/pip" install -r requirements.txt
+    echo "❌ 未检测到虚拟环境 ($VENV_DIR)"
+    echo "请先运行部署脚本进行初始化:"
+    echo "  chmod +x setup_venv.sh"
+    echo "  ./setup_venv.sh"
+    exit 1
 fi
-
-PYTHON_EXEC="$VENV_DIR/bin/python"
 
 # 2. 停止旧进程
 echo "[1/3] 停止旧进程..."
-# 使用 pgrep 查找包含 main.py 的 python 进程
 OLD_PID=$(pgrep -f "python main.py" 2>/dev/null)
 
 if [ -n "$OLD_PID" ]; then
@@ -47,8 +42,11 @@ fi
 
 # 3. 启动新进程
 echo "[2/3] 启动新进程..."
-# 使用 nohup 后台启动，日志重定向
-nohup "$PYTHON_EXEC" main.py > output.log 2>&1 &
+# 使用 source 激活环境，确保环境变量 (VIRTUAL_ENV) 正确加载
+source "$VENV_DIR/bin/activate"
+
+# 后台启动
+nohup python main.py > output.log 2>&1 &
 NEW_PID=$!
 sleep 2
 
