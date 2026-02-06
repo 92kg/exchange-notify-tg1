@@ -380,21 +380,38 @@ class CryptoSentimentMonitor:
         # 信号详情
         for signal in signals:
             coin = signal['coin']
-            action = "📈 买入" if signal['type'] == 'BUY' else "📉 卖出"
+            action = "📈 [BUY]" if signal['type'] == 'BUY' else ("➕ [ADD]" if signal['type'] == 'ADD' else "📉 [SELL]")
             
-            msg += f"<b>{action}信号 - {coin}</b>\n"
-            msg += f"强度: {signal['strength']}\n"
+            msg += f"<b>{action} {coin}</b>\n"
+            msg += f"-----------------------\n"
             
             # 当前价格
             price = data['coins'][coin].get('price')
             if price:
-                msg += f"价格: {format_price(price)}\n"
+                msg += f"💰 现价: {format_price(price)}\n\n"
+                
+                # ------ 辅助交易建议 ------
+                if signal['type'] in ['BUY', 'ADD']:
+                    stop_pct = self.config['risk'].get('stop_loss_pct', -15)
+                    stop_price = price * (1 + stop_pct / 100)
+                    
+                    msg += f"👨‍💻 <b>建议操作:</b>\n"
+                    if signal['type'] == 'BUY':
+                        msg += f"1. 买入: 30% 仓位\n"
+                    else:
+                        msg += f"1. 加仓: 20% 仓位\n"
+                    
+                    msg += f"2. 止损: <b>{format_price(stop_price)}</b> ({stop_pct}%)\n"
+                    msg += f"-----------------------\n"
+                    msg += f"⚠️ 请立即在 OKX 挂单!\n\n"
+                # -------------------------
             
-            msg += f"原因:\n"
+            msg += f"📊 信号依据:\n"
+            msg += f"• 强度: {signal['strength']}\n"
             for reason in signal['reasons']:
-                msg += f"  • {reason}\n"
+                msg += f"• {reason}\n"
             
-            msg += f"标签: {' '.join(signal['tags'])}\n\n"
+            msg += f"\n"
         
         # 市场概况
         if data.get('fear_greed'):

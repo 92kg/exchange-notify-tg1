@@ -12,6 +12,7 @@ import requests
 import time
 import os
 import json
+import statistics
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
@@ -499,34 +500,89 @@ class EnhancedBacktester:
         return None
     
     def calculate_returns(self) -> List[Dict]:
-        """计算收益（含止损分析）"""
+        """计算收益（含动态止损分析 V2）"""
         logger.info("开始计算收益...")
         
-        stop_loss = self.config.get('stop_loss', -15)  # 默认-15%止损
+        # 获取风控配置 (支持 trailing stop)
+        risk_config = self.config.get('risk', {})
+        stop_type = risk_config.get('stop_loss_type', 'trailing') # fixed / trailing
+        stop_pct = risk_config.get('stop_loss_pct', -15)          # 止损比例
+        
         results = []
         
         for signal in self.signals:
             if signal['type'] != 'BUY':
                 continue
                 
-            result = {**signal, 'returns': {}, 'max_drawdown': 0, 'hit_stop_loss': False}
+            entry_price = signal['price']
+            result = {
+                **signal, 
+                'returns': {}, 
+                'max_drawdown': 0, 
+                'exit_reason': 'hold', # hold / stop_loss / profit
+                'exit_price': 0,
+                'exit_day': 0
+            }
             
-            # 计算持有期内每日价格
-            min_price = signal['price']
-            for day in range(1, max(self.config['hold_days']) + 1):
+            # 模拟持仓过程
+            max_price = entry_price
+            current_stop_price = 0
+            
+            # 初始化止损线
+            if stop_type == 'trailing':
+                current_stop_price = entry_price * (1 + stop_pct / 100)
+            else:
+                current_stop_price = entry_price * (1 + stop_pct / 100)
+            
+            is_stopped = False
+            
+            # 遍历持有期（最大30天）
+            max_hold_days = max(self.config['hold_days'])
+            
+            for day in range(1, max_hold_days + 1):
                 day_price = self._get_price_after_days(signal['coin'], signal['date'], day)
-                if day_price:
-                    min_price = min(min_price, day_price)
-                    
-                    # 记录特定天数的收益
-                    if day in self.config['hold_days']:
-                        ret = (day_price - signal['price']) / signal['price'] * 100
-                        result['returns'][f'{day}d'] = round(ret, 2)
+                if not day_price:
+                    continue
+                
+                # 1. 更新最高价
+                if day_price > max_price:
+                    max_price = day_price
+                    # 如果是移动止损，抬高止损线
+                    if stop_type == 'trailing':
+                        new_stop = max_price * (1 + stop_pct / 100)
+                        current_stop_price = max(current_stop_price, new_stop)
+                
+                # 2. 检查由最高点回撤幅度（用于统计最大回撤）
+                drawdown_from_max = (day_price - max_price) / max_price * 100
+                result['max_drawdown'] = min(result['max_drawdown'], drawdown_from_max)
+                
+                # 3. 检查是否触及止损线
+                if day_price <= current_stop_price:
+                    is_stopped = True
+                    result['exit_reason'] = 'stop_loss'
+                    result['exit_price'] = current_stop_price # 近似以止损价成交
+                    result['exit_day'] = day
+                    break
+                
+                # 记录特定天数的持有收益（如果还没止损）
+                if day in self.config['hold_days']:
+                    ret = (day_price - entry_price) / entry_price * 100
+                    result['returns'][f'{day}d'] = round(ret, 2)
             
-            # 计算最大回撤
-            max_dd = (min_price - signal['price']) / signal['price'] * 100
-            result['max_drawdown'] = round(max_dd, 2)
-            result['hit_stop_loss'] = max_dd <= stop_loss
+            # 如果持有期结束还没止损，则以最后一天价格平仓
+            if not is_stopped:
+                final_price = self._get_price_after_days(signal['coin'], signal['date'], max_hold_days)
+                if final_price:
+                    result['exit_price'] = final_price
+                    result['exit_day'] = max_hold_days
+                    
+                    # 补全所有天数的收益（假设一直持有）
+                    # 注意：上面的循环已经记录了持有收益，这里不需要重复
+                    pass
+            
+            # 计算最终交易收益（基于退出价格）
+            final_return = (result['exit_price'] - entry_price) / entry_price * 100
+            result['final_return'] = round(final_return, 2)
             
             results.append(result)
         
@@ -536,18 +592,28 @@ class EnhancedBacktester:
     # ==================== 报告生成 ====================
     
     def generate_report(self) -> Dict:
-        """生成报告"""
+        """生成报告 (V2: 基于真实模拟结果)"""
         if not self.results:
             return {}
         
-        buy_results = self.results  # 现在只有买入信号
-        stop_loss = self.config.get('stop_loss', -15)
+        buy_results = self.results
         
-        # 止损统计
-        hit_stop = sum(1 for r in buy_results if r.get('hit_stop_loss', False))
-        max_dds = [r.get('max_drawdown', 0) for r in buy_results]
-        avg_dd = sum(max_dds) / len(max_dds) if max_dds else 0
+        # 1. 基础统计
+        total_signals = len(buy_results)
+        hit_stop = sum(1 for r in buy_results if r.get('exit_reason') == 'stop_loss')
+        avg_drawdown = statistics.mean([r.get('max_drawdown', 0) for r in buy_results]) if buy_results else 0
         
+        # 2. 收益统计 (基于 final_return)
+        final_returns = [r.get('final_return', 0) for r in buy_results]
+        win_count = sum(1 for r in final_returns if r > 0)
+        win_rate = win_count / total_signals * 100 if total_signals > 0 else 0
+        avg_return = statistics.mean(final_returns) if final_returns else 0
+        total_return = sum(final_returns)
+        
+        # 3. 风险配置回顾
+        risk_config = self.config.get('risk', {})
+        stop_desc = f"{risk_config.get('stop_loss_type')} ({risk_config.get('stop_loss_pct')}%)"
+
         report = {
             'period': {
                 'start': self.fear_greed_data[0]['date'],
@@ -555,49 +621,55 @@ class EnhancedBacktester:
                 'days': len(self.fear_greed_data)
             },
             'signals': {
-                'total': len(buy_results),
+                'total': total_signals,
+                'stopped': hit_stop,
+                'stop_rate': round(hit_stop / total_signals * 100, 1) if total_signals else 0
             },
-            'buy_performance': self._calc_performance(buy_results, "买入"),
+            'performance': {
+                'avg_return': round(avg_return, 2),
+                'total_return': round(total_return, 2),
+                'win_rate': round(win_rate, 1),
+                'max_return': round(max(final_returns), 2) if final_returns else 0,
+                'min_return': round(min(final_returns), 2) if final_returns else 0,
+            },
             'risk': {
-                'stop_loss_line': stop_loss,
-                'hit_stop_loss': hit_stop,
-                'hit_rate': round(hit_stop / len(buy_results) * 100, 1) if buy_results else 0,
-                'avg_max_drawdown': round(avg_dd, 2),
+                'stop_loss_config': stop_desc,
+                'avg_max_drawdown': round(avg_drawdown, 2),
             }
         }
         
         self._print_report(report)
         return report
     
-    def _calc_performance(self, results: List[Dict], label: str, invert: bool = False) -> Dict:
-        """计算信号性能"""
-        stats = {'count': len(results)}
-        
-        for days in self.config['hold_days']:
-            day_key = f'{days}d'
-            returns = [r['returns'].get(day_key) for r in results if r['returns'].get(day_key) is not None]
-            
-            if returns:
-                wins = sum(1 for r in returns if r > 0)
-                stats[day_key] = {
-                    'avg_return': round(sum(returns) / len(returns), 2),
-                    'win_rate': round(wins / len(returns) * 100, 1),
-                    'sample_size': len(returns)
-                }
-        
-        return stats
-    
     def _print_report(self, report: Dict):
         """打印报告"""
         print("\n" + "=" * 70)
-        print("📊 增强版回测报告 (V8 趋势策略 + 止损)")
+        print("📊 增强版回测报告 (V8 趋势策略 + 动态止损)")
         print("=" * 70)
         
         print(f"\n📅 回测周期: {report['period']['start']} ~ {report['period']['end']} ({report['period']['days']} 天)")
-        print(f"📈 买入信号: {report['signals']['total']} 次")
+        print(f"📈 信号统计: 共 {report['signals']['total']} 次买入")
+        print(f"🛑 止损触发: {report['signals']['stopped']} 次 (触发率 {report['signals']['stop_rate']}%)")
         
-        # 买入信号统计
         print("\n" + "-" * 70)
+        print("💰 收益表现 (模拟持仓)")
+        print("-" * 70)
+        p = report['performance']
+        print(f"  平均单次收益: {p['avg_return']:+.2f}%")
+        print(f"  累计名义收益: {p['total_return']:+.2f}%")
+        print(f"  胜率       : {p['win_rate']}%")
+        print(f"  最佳/最差   : {p['max_return']:+.2f}% / {p['min_return']:+.2f}%")
+        
+        print("\n" + "-" * 70)
+        print("🛡️ 风险分析")
+        print("-" * 70)
+        print(f"  止损配置: {report['risk']['stop_loss_config']}")
+        print(f"  平均最大回撤: {report['risk']['avg_max_drawdown']:.2f}%")
+        print("\n" + "=" * 70)
+    
+    def _calc_performance(self, results: List[Dict], label: str, invert: bool = False) -> Dict:
+        # Deprecated by new logic
+        return {}
         print("📥 买入信号效果")
         print("-" * 70)
         buy_stats = report.get('buy_performance', {})
@@ -643,28 +715,46 @@ class EnhancedBacktester:
 
 
 def main():
-    config = {
-        'thresholds': {
-            'fear_buy': 15,
-            'greed_sell': 75,
-        },
-        'reversal': {
-            'enabled': True,
-            'consecutive_periods': 2,
-        },
-        'ma': {
-            'enabled': True,
-            'short_period': 7,
-            'long_period': 30,
-        },
-        'filters': {
-            'max_drop_7d': -30,
-            'require_price_recovery': True,
-        },
-        'coins': ['BTC', 'ETH'],
-        'hold_days': [7, 14, 30],
-        'use_sell_signal': False,
-    }
+    import yaml
+    
+    # Load config from file
+    try:
+        with open('config.yaml', 'r', encoding='utf-8') as f:
+            file_config = yaml.safe_load(f)
+            
+        print("✅ 已加载 config.yaml")
+        
+        # Extract relevant sections for backtester
+        config = {
+            'thresholds': file_config.get('thresholds', {}),
+            'reversal': file_config.get('reversal', {}),
+            'ma': file_config.get('trend_strategy', {}), # Map trend_strategy to ma
+            'filters': {'max_drop_7d': -30, 'require_price_recovery': True}, # Keep defaults for internal filters
+            'coins': [c['symbol'] for c in file_config.get('coins', []) if c.get('enabled')],
+            'hold_days': file_config.get('backtest', {}).get('profit_days', [7, 14, 30]),
+            'use_sell_signal': file_config.get('strategy', {}).get('use_sell_signal', False),
+            'risk': file_config.get('risk', {'stop_loss_type': 'trailing', 'stop_loss_pct': -15}),
+            'position': file_config.get('position', {})
+        }
+        
+        # Map MA config keys if needed (trend_strategy uses ma_short/ma_long)
+        if 'ma_short' in config['ma']:
+            config['ma']['short_period'] = config['ma']['ma_short']
+        if 'ma_long' in config['ma']:
+            config['ma']['long_period'] = config['ma']['ma_long']
+        config['ma']['enabled'] = True
+            
+    except Exception as e:
+        print(f"⚠️ 加载 config.yaml 失败: {e}, 使用默认配置")
+        config = {
+            'thresholds': {'fear_buy': 20, 'greed_sell': 75},
+            'reversal': {'enabled': True, 'consecutive_periods': 2},
+            'ma': {'enabled': True, 'short_period': 7, 'long_period': 30},
+            'filters': {'max_drop_7d': -30, 'require_price_recovery': True},
+            'coins': ['BTC', 'ETH'],
+            'hold_days': [7, 14, 30],
+            'use_sell_signal': False,
+        }
     
     backtester = EnhancedBacktester(config)
     report = backtester.run(days=2000)
