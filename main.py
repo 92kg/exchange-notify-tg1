@@ -673,6 +673,46 @@ def show_statistics():
     print("="*60 + "\n")
     db.close()
 
+def ensure_single_instance(lock_file="monitor.lock"):
+    """确保单实例运行 (Windows/Linux兼容)"""
+    import os
+    import sys
+    import psutil  # Fix: Import psutil
+    
+    # 检查锁文件是否存在
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # 检查进程是否存在
+            if psutil.pid_exists(pid):
+                print(f"❌ 程序已在运行 (PID: {pid})")
+                print(f"若确认未运行，请删除 {lock_file}")
+                sys.exit(1)
+            else:
+                print(f"⚠️ 发现残留锁文件 (PID: {pid})，自动清理")
+                os.remove(lock_file)
+        except (ValueError, Exception):
+            # 锁文件损坏，清理
+            os.remove(lock_file)
+            
+    # 创建锁文件
+    try:
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+            
+        # 注册退出时删除锁文件
+        import atexit
+        def cleanup_lock():
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+        atexit.register(cleanup_lock)
+        
+    except Exception as e:
+        print(f"❌ 无法创建锁文件: {e}")
+        sys.exit(1)
+
 def main():
     """主函数"""
     
@@ -682,6 +722,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == '--stats':
         show_statistics()
         return
+        
+    # 单实例检查
+    ensure_single_instance()
     
     print("""
     ╔════════════════════════════════════════════════════╗
@@ -722,6 +765,17 @@ def main():
         print(f"\n❌ 启动失败: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        # 双重保险：finally 块清理 (atexit 有时在强制终止时不触发)
+        import os
+        if os.path.exists("monitor.lock"):
+            try:
+                # 再次确认是自己的锁
+                with open("monitor.lock", 'r') as f:
+                    if f.read().strip() == str(os.getpid()):
+                        os.remove("monitor.lock")
+            except:
+                pass
 
 
 if __name__ == "__main__":
