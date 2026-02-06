@@ -1,29 +1,24 @@
-# 加密货币情绪监控系统 v3.4
+# 加密货币情绪监控系统 v3.5
 
 多交易所、多币种支持的加密货币情绪量化监控系统
 
 ## 功能特性
 
 ### 核心功能
-- ✅ **V8 趋势策略**：回测胜率 57%，30天收益 +5.28%
-- ✅ 技术分析（MA7/MA30 趋势确认）
-- ✅ 止损机制（默认 -15%）
-- ✅ 价格数据缓存
-- ✅ 恐慌指数监控
-- ✅ Telegram 实时推送
-- ✅ SQLite3 数据持久化
-- ✅ 5.5年历史数据回测验证
+- ✅ **V8 趋势策略**：基于 2000天 回测验证 (总回报 +3357%, 胜率 56%)
+- ✅ **自动风控系统**：支持 -15% 动态止损 (Trailing Stop) + 自动平仓
+- ✅ **盈利加仓 (Pyramiding)**：趋势确认后自动提示加仓
+- ✅ **智能通知**：Telegram 推送包含明确的"建议操作" (买入/止损价计算)
+- ✅ **隐私安全**：数据与策略完全本地运行
 
-> ⚠️ 情绪卖出信号已禁用（回测正确率仅38%）
+### 策略逻辑
+- **买入**：恐慌指数 < 25 (战略) + 价格站上 MA7/MA30 (战术)
+- **卖出**：触及动态止损线 (-15%) 自动离场
+- **加仓**：持仓浮盈 > 5% 时提示加仓
 
 ### 交易所支持
-- ✅ OKX
-- ✅ Binance
-- ⏳ Bybit (规划中)
-
-### 币种支持
-- ✅ BTC / ETH (默认启用)
-- ✅ 任意山寨币（配置文件添加）
+- ✅ OKX (支持行情 + 自动交易)
+- ✅ Binance (仅支持行情)
 
 ## 快速开始
 
@@ -33,21 +28,23 @@ pip install -r requirements.txt
 ```
 
 ### 2. 配置系统
+编辑 `config.yaml` (即使是新手也建议先查看 `config.sample.yaml`):
 
-编辑 `config.yaml`:
 ```yaml
-exchange:
-  name: "okx"  # 选择交易所
+# 自动交易 (推荐开启)
+auto_close: true
 
-coins:
-  - symbol: "BTC"
-    enabled: true
-  - symbol: "ETH"
-    enabled: true
+# 风控配置
+risk:
+  stop_loss_type: "trailing"
+  stop_loss_pct: -15
+```
 
-# 策略配置
-strategy:
-  mode: "trend"              # 策略模式: trend(推荐) / fear_buy
+### 3.启动
+双击 `start.bat` 或运行:
+```bash
+python main.py
+```
   use_fear_greed: true       # 使用恐慌指数
   use_funding_percentile: true
   use_reversal: true

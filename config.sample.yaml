@@ -67,6 +67,9 @@ trend_strategy:
   max_fg_value: 70          # 最高恐慌指数（避免追高）
   require_price_above_ma: true  # 价格必须高于均线
 
+# 自动交易配置
+auto_close: false           # [新增] 是否触发止损时自动平仓 (生产环境建议开启前充分测试)
+
 # 风控配置
 risk:
   stop_loss_type: "trailing"  # fixed / trailing
@@ -93,21 +96,15 @@ resonance:
 
 # Telegram配置
 telegram:
-  bot_token: "1"
-  chat_id: "1"
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
   enabled: true
-
-# Glassnode配置（可选链上数据）
-glassnode:
-  api_key: ""
-  enabled: false
 
 # 运行配置
 runtime:
   check_interval: 300       # 检查间隔（秒）- 建议 300s (5分钟) 以便及时触发止损
   db_file: "crypto_sentiment_v3.db"
   log_file: "monitor.log"
-  log_level: "INFO"         # DEBUG, INFO, WARNING, ERROR
 
 # 回测配置
 backtest:

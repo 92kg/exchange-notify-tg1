@@ -293,3 +293,52 @@ class OKXExchange(ExchangeBase):
                     print(f"解析持仓数据失败: {e}")
                     
         return positions
+
+    def get_balance(self, ccy: str) -> float:
+        """
+        获取指定币种余额 (用于全仓卖出)
+        :param ccy: 币种代码，如 BTC
+        :return: 可用余额
+        """
+        try:
+            data = self._make_request("/api/v5/account/balance", {"ccy": ccy})
+            if data and len(data) > 0:
+                details = data[0].get('details', [])
+                for d in details:
+                    if d.get('ccy') == ccy:
+                        return float(d.get('availbal', 0))
+            return 0.0
+        except Exception as e:
+            # print(f"获取余额失败: {e}")
+            return 0.0
+
+    def create_order(self, symbol: str, side: str, amount: float, order_type: str = 'market') -> Optional[Dict]:
+        """
+        创建订单
+        :param symbol: 交易对，如 BTC
+        :param side: buy 或 sell
+        :param amount: 数量 (卖出时为币的数量，买入时为USDT数量-需注意市价买入单位)
+                       注意：OKX市价卖出 sz 是币的数量
+        :param order_type: limit 或 market
+        :return: 订单结果
+        """
+        # 格式化交易对: BTC -> BTC-USDT
+        inst_id = f"{symbol}-USDT"
+        
+        params = {
+            "instId": inst_id,
+            "tdMode": "cash",
+            "side": side,
+            "ordType": order_type,
+            "sz": str(amount)
+        }
+        
+        try:
+            # print(f"提交订单: {params}")
+            data = self._make_request("/api/v5/trade/order", params, method='POST')
+            if data and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            # print(f"下单失败: {e}")
+            return None

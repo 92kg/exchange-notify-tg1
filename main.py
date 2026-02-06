@@ -359,10 +359,35 @@ class CryptoSentimentMonitor:
                     f"买入价: ${s['entry_price']:.2f}\n"
                     f"止损价: ${s['stop_price']:.2f}\n"
                     f"收益: {s['return_pct']:+.1f}%\n"
-                    f"最高价: ${s['max_price']:.2f}\n"
-                    f"回撤: {s['drawdown']:.1f}%\n\n"
-                    f"⚠️ 建议执行止损操作"
+                    f"回撤: {s['drawdown']:.1f}%\n"
                 )
+                
+                # 自动平仓逻辑
+                if self.config.get('auto_close', False):
+                    # 获取该币种余额 (全平)
+                    balance = self.exchange.get_balance(s['coin'])
+                    if balance > 0.00001:  # 最小精度过滤
+                        self.logger.info(f"🛑 正在执行自动止损: {s['coin']}, 数量: {balance}")
+                        # 市价全平
+                        # 注意：OKX市价卖出一律传 sz=数量 (币对应单位)
+                        order = self.exchange.create_order(
+                            symbol=s['coin'], 
+                            side='sell', 
+                            amount=balance, 
+                            order_type='market'
+                        )
+                        
+                        if order:
+                            msg += f"\n🤖 <b>系统已自动市价平仓</b>\n订单ID: {order.get('ordId')}"
+                            self.logger.info(f"✅ 自动止损订单提交成功: {order}")
+                        else:
+                            msg += f"\n⚠️ <b>自动平仓失败</b> (API返回错误)"
+                            self.logger.error(f"❌ 自动止损订单提交失败")
+                    else:
+                        msg += f"\n⚠️ 余额不足，无法平仓"
+                else:
+                    msg += f"\n⚠️ 建议立即执行止损操作"
+                
                 self.notifier.send(msg)
                 self.logger.warning(f"🛑 已发送止损通知: {s['coin']}")
     
