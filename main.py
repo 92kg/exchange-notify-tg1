@@ -494,6 +494,9 @@ class CryptoSentimentMonitor:
                 # 心跳检测
                 self._check_heartbeat()
                 
+                # 每日报告检查
+                self._check_daily_report()
+                
                 # 等待下次检查
                 self.logger.info(f"\n⏳ 等待 {interval//60} 分钟后下次检查...\n")
                 time.sleep(interval)
@@ -580,12 +583,20 @@ class CryptoSentimentMonitor:
         if (current_time - self._last_heartbeat).total_seconds() >= 3600:
             self.logger.info(f"❤️ 系统心跳正常 | 运行中 | {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
             self._last_heartbeat = current_time
+
+    def _check_daily_report(self):
+        """检查并发送每日报告"""
+        current_time = datetime.now()
+        
+        # 每天 08:00 - 08:59 期间发送
+        if current_time.hour == 8:
+            # 检查今天是否已发送
+            last_date = getattr(self, '_last_daily_report_date', None)
+            current_date = current_time.date()
             
-            # (可选) 每天 08:00 发送每日报告
-            if current_time.hour == 8 and current_time.minute < 10:
-                if not hasattr(self, '_last_daily_report') or (current_time - self._last_daily_report).total_seconds() > 3600:
-                    self._send_daily_report()
-                    self._last_daily_report = current_time
+            if last_date != current_date:
+                self._send_daily_report()
+                self._last_daily_report_date = current_date
 
     def _send_daily_report(self):
         """发送每日状态报告"""
