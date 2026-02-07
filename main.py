@@ -304,16 +304,19 @@ class CryptoSentimentMonitor:
                                 # 目前简单处理：如果是新开仓则添加，如果是加仓也调用add_position刷新止损基准或不做操作
                                 # 考虑到 PositionTracker 当前逻辑可能不支持复杂仓位合并，我们暂时只更新追踪
                                 if is_add:
-                                     # 对于加仓，我们可能希望重置止损线或者更新平均成本
-                                     # 简单起见，加仓也是一种"买入"，让 PositionTracker 决定如何处理
-                                     # 假设 PositionTracker 目前主要是追踪初始的一笔，这里我们暂不改变持仓成本逻辑
-                                     # 仅发送信号。如果需要改成本，需要升级 PositionTracker。
-                                     pass 
+                                    self.logger.info(f"➕ {signal['coin']} 触发加仓信号")
+                                    self.position_tracker.add_position(
+                                        signal['coin'], 
+                                        price, 
+                                        signal.get('reasons', []),
+                                        amount=1.0
+                                    )
                                 else:
                                     self.position_tracker.add_position(
                                         signal['coin'], 
                                         price, 
-                                        signal.get('reasons', [])
+                                        signal.get('reasons', []),
+                                        amount=1.0
                                     )
                     except Exception as e:
                         self.logger.error(f"保存信号失败: {e}")

@@ -277,25 +277,24 @@ class SignalGenerator:
             if current_timestamp:
                 values = []
                 for item in full_history:
-                    # 将DB时间字符串转为timestamp
+                    # 处理时间戳兼容性
                     try:
-                        if isinstance(item['timestamp'], str):
+                        ts_val = item['timestamp']
+                        if isinstance(ts_val, str):
                             # 修复：SQLite CURRENT_TIMESTAMP 格式为空格分隔，需转换为 ISO 格式
-                            time_str = item['timestamp'].replace(' ', 'T')
+                            time_str = ts_val.replace(' ', 'T')
                             dt = datetime.fromisoformat(time_str)
                             if dt.tzinfo is None:
                                 dt = dt.replace(tzinfo=timezone.utc)
                             ts = dt.timestamp()
                         else:
-                            ts = item['timestamp']
+                            ts = float(ts_val)
                         
                         # 只有当记录时间早于当前时间(容差5秒)才算历史
                         if ts < current_timestamp - 5:
                             values.append(item['value'])
                     except Exception as e:
-                        # 时间戳解析失败时，跳过该数据点（避免把当前点误加入历史）
-                        # 如果需要调试，取消下面的注释
-                        # logger.debug(f"跳过数据点，时间解析失败: {e}")
+                        # 时间戳解析失败时，跳过该数据点
                         continue
                 history = values
             else:

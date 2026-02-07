@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 class Position:
     """单个持仓"""
     
-    def __init__(self, coin: str, entry_price: float, entry_date: str, signal_reasons: List[str] = None):
+    def __init__(self, coin: str, entry_price: float, entry_date: str, signal_reasons: List[str] = None, amount: float = 1.0):
         self.coin = coin
         self.entry_price = entry_price
+        self.amount = amount
         self.entry_date = entry_date
         self.signal_reasons = signal_reasons or []
         self.max_price = entry_price  # 历史最高价
@@ -25,6 +26,17 @@ class Position:
         self.status = "open"  # open / stopped / closed
         self.stop_triggered_at = None
         self.stop_price = None
+        
+    def add_amount(self, price: float, amount: float):
+        """加仓：更新平均价格和数量"""
+        total_value = (self.entry_price * self.amount) + (price * amount)
+        self.amount += amount
+        self.entry_price = total_value / self.amount
+        # max_price 保持不变，还是取历史最高？
+        # 如果加仓后均价变了，止损线也会变（如果是固定止损）。
+        # 如果是移动止损，max_price 应该是基于"当前价格"的历史最高。
+        # 加仓不影响历史最高价的记录，但会影响盈亏计算。
+        # 重新评估当前价格是否高于 max_price (理论上实时更新会做，这里只做数据合并)
     
     def update_price(self, price: float) -> bool:
         """更新价格，返回是否触发止损"""
@@ -47,6 +59,7 @@ class Position:
         return {
             'coin': self.coin,
             'entry_price': self.entry_price,
+            'amount': self.amount,
             'entry_date': self.entry_date,
             'signal_reasons': self.signal_reasons,
             'max_price': self.max_price,
@@ -62,7 +75,8 @@ class Position:
             coin=data['coin'],
             entry_price=data['entry_price'],
             entry_date=data['entry_date'],
-            signal_reasons=data.get('signal_reasons', [])
+            signal_reasons=data.get('signal_reasons', []),
+            amount=data.get('amount', 1.0)
         )
         pos.max_price = data.get('max_price', pos.entry_price)
         pos.current_price = data.get('current_price', pos.entry_price)
@@ -121,21 +135,31 @@ class PositionTracker:
         except Exception as e:
             logger.warning(f"保存持仓失败: {e}")
     
-    def add_position(self, coin: str, price: float, reasons: List[str] = None):
-        """添加新持仓"""
+    def add_position(self, coin: str, price: float, reasons: List[str] = None, amount: float = 1.0):
+        """添加或更新持仓 (支持加仓)"""
         if coin in self.positions:
-            logger.info(f"⚠️ {coin} 已有持仓，跳过")
+            pos = self.positions[coin]
+            old_price = pos.entry_price
+            pos.add_amount(price, amount)
+            if reasons:
+                pos.signal_reasons.extend(reasons)
+                # 去重
+                pos.signal_reasons = list(set(pos.signal_reasons))
+                
+            self._save_positions()
+            logger.info(f"➕ {coin} 加仓: ${price:.2f} (新均价: ${pos.entry_price:.2f})")
             return
         
         pos = Position(
             coin=coin,
             entry_price=price,
             entry_date=datetime.now().strftime('%Y-%m-%d'),
-            signal_reasons=reasons
+            signal_reasons=reasons,
+            amount=amount
         )
         self.positions[coin] = pos
         self._save_positions()
-        logger.info(f"📥 添加持仓: {coin} @ ${price:.2f}")
+        logger.info(f"📥 建仓: {coin} @ ${price:.2f}")
     
     def update_prices(self, prices: Dict[str, float]) -> List[Dict]:
         """

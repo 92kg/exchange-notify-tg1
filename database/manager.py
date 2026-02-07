@@ -35,7 +35,7 @@ class DatabaseManager:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS market_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                timestamp INTEGER,  -- Unix Timestamp (seconds)
                 fear_greed_index INTEGER,
                 coins_data TEXT  -- JSON格式存储所有币种数据
             )
@@ -45,7 +45,7 @@ class DatabaseManager:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                timestamp INTEGER,  -- Unix Timestamp (seconds)
                 coin_symbol TEXT,
                 signal_type TEXT,  -- BUY or SELL
                 strength TEXT,
@@ -97,9 +97,10 @@ class DatabaseManager:
             coins_json = json.dumps(data.get('coins', {}))
             
             cursor.execute('''
-                INSERT INTO market_data (fear_greed_index, coins_data)
-                VALUES (?, ?)
+                INSERT INTO market_data (timestamp, fear_greed_index, coins_data)
+                VALUES (?, ?, ?)
             ''', (
+                int(datetime.now().timestamp()),
                 data['fear_greed']['value'] if data.get('fear_greed') else None,
                 coins_json
             ))
@@ -127,11 +128,13 @@ class DatabaseManager:
             
             cursor.execute('''
                 INSERT INTO signals (
+                    timestamp,
                     coin_symbol, signal_type, strength,
                     price_at_signal, fear_greed_at_signal,
                     reasons, tags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
+                int(datetime.now().timestamp()),
                 coin_symbol,
                 signal['type'],
                 signal['strength'],
@@ -158,18 +161,21 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         try:
+            # 计算起始时间戳
+            start_ts = int(datetime.now().timestamp()) - (hours * 3600)
+            
             cursor.execute(f'''
                 SELECT fear_greed_index, timestamp FROM market_data
                 WHERE fear_greed_index IS NOT NULL
-                AND timestamp >= datetime('now', '-{hours} hours')
+                AND timestamp >= ?
                 ORDER BY timestamp
-            ''')
+            ''', (start_ts,))
             
             history = []
             for row in cursor.fetchall():
                 history.append({
                     'value': row[0],
-                    'timestamp': row[1]
+                    'timestamp': row[1]  # 直接返回整数时间戳
                 })
             return history
         
@@ -188,11 +194,13 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         try:
+            start_ts = int(datetime.now().timestamp()) - (hours * 3600)
+            
             cursor.execute(f'''
                 SELECT coins_data FROM market_data
-                WHERE timestamp >= datetime('now', '-{hours} hours')
+                WHERE timestamp >= ?
                 ORDER BY timestamp
-            ''')
+            ''', (start_ts,))
             
             rates = []
             for row in cursor.fetchall():
@@ -329,9 +337,19 @@ class DatabaseManager:
             
             signals = []
             for row in cursor.fetchall():
+                # 处理时间戳兼容性（如果是旧数据可能是字符串，新数据是整数）
+                ts_val = row[1]
+                if isinstance(ts_val, str):
+                    try:
+                        ts = datetime.fromisoformat(ts_val.replace(' ', 'T'))
+                    except ValueError:
+                        ts = datetime.now() # Fallback
+                else:
+                    ts = datetime.fromtimestamp(ts_val)
+
                 signals.append({
                     'id': row[0],
-                    'timestamp': datetime.fromisoformat(row[1].replace(' ', 'T')) if isinstance(row[1], str) else row[1],
+                    'timestamp': ts,
                     'coin': row[2],
                     'type': row[3],
                     'price': row[4]
@@ -397,7 +415,7 @@ class DatabaseManager:
                 WHERE timestamp <= ?
                 ORDER BY timestamp DESC
                 LIMIT 1
-            ''', (timestamp.isoformat(),))
+            ''', (int(timestamp.timestamp()),))
             
             row = cursor.fetchone()
             if row:
