@@ -66,6 +66,10 @@ trend_strategy:
   min_7d_change: 0          # 最小7天涨幅要求 (%)
   max_fg_value: 70          # 最高恐慌指数（避免追高）
   require_price_above_ma: true  # 价格必须高于均线
+  # 评分系统配置（原硬编码值，现可调）
+  score_threshold: 5        # 信号有效分数阈值
+  high_momentum_7d: 10      # 强势涨幅阈值 (%)
+  medium_momentum_7d: 5     # 中等涨幅阈值 (%)
 
 # 自动交易配置
 auto_close: false           # [新增] 是否触发止损时自动平仓 (生产环境建议开启前充分测试)
@@ -110,3 +114,11 @@ runtime:
 backtest:
   profit_days: [7, 14, 30]
   historical_days: 365
+  # 手续费配置 (%)
+  fee_rate: 0.1             # 单边手续费 (OKX现货约0.08%-0.1%)
+  # 双向手续费 = fee_rate * 2 = 0.2% (买+卖)
+  slippage: 0.1             # 滑点成本 (%) - 实际成交价与预期价差
+  execution_delay: 0.5      # 执行延迟成本 (%) - 收到信号到下单的价格变动
+  # 样本外验证 (防过拟合)
+  train_test_split: 0.7     # 70%训练集, 30%测试集
+  validate_out_of_sample: true  # 是否启用样本外验证

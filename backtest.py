@@ -355,11 +355,17 @@ class EnhancedBacktester:
         if change_7d is None or change_7d < 0:
             return result
         
-        if change_7d >= 10:
+        # 使用可配置的动量阈值（避免硬编码过拟合）
+        ma_config = self.config.get('ma', {})
+        high_momentum = ma_config.get('high_momentum_7d', 10)
+        medium_momentum = ma_config.get('medium_momentum_7d', 5)
+        score_threshold = ma_config.get('score_threshold', 5)
+        
+        if change_7d >= high_momentum:
             result['reasons'].append(f"📈 强势 7d+{change_7d:.1f}%")
             result['score'] += 3
             result['quality'] = 'high'
-        elif change_7d >= 5:
+        elif change_7d >= medium_momentum:
             result['reasons'].append(f"7d+{change_7d:.1f}%")
             result['score'] += 2
         else:
@@ -372,7 +378,7 @@ class EnhancedBacktester:
                 result['reasons'].append("情绪回升")
                 result['score'] += 1
         
-        result['valid'] = result['score'] >= 5
+        result['valid'] = result['score'] >= score_threshold
         return result
     
     def simulate_signals(self) -> List[Dict]:
@@ -500,13 +506,20 @@ class EnhancedBacktester:
         return None
     
     def calculate_returns(self) -> List[Dict]:
-        """计算收益（含动态止损分析 V2）"""
+        """计算收益（含动态止损分析 V2 + 手续费）"""
         logger.info("开始计算收益...")
         
         # 获取风控配置 (支持 trailing stop)
         risk_config = self.config.get('risk', {})
         stop_type = risk_config.get('stop_loss_type', 'trailing') # fixed / trailing
         stop_pct = risk_config.get('stop_loss_pct', -15)          # 止损比例
+        
+        # 获取手续费配置 (单边费率，双向需要 x2)
+        fee_rate = self.config.get('fee_rate', 0.1)  # 默认 0.1%
+        slippage = self.config.get('slippage', 0.1)  # 默认 0.1% 滑点
+        execution_delay = self.config.get('execution_delay', 0)  # 执行延迟成本
+        round_trip_fee = fee_rate * 2  # 买入 + 卖出
+        total_cost = round_trip_fee + slippage + execution_delay  # 总交易成本
         
         results = []
         
@@ -521,7 +534,8 @@ class EnhancedBacktester:
                 'max_drawdown': 0, 
                 'exit_reason': 'hold', # hold / stop_loss / profit
                 'exit_price': 0,
-                'exit_day': 0
+                'exit_day': 0,
+                'fee_deducted': round_trip_fee  # 记录扣除的手续费
             }
             
             # 模拟持仓过程
@@ -564,10 +578,12 @@ class EnhancedBacktester:
                     result['exit_day'] = day
                     break
                 
-                # 记录特定天数的持有收益（如果还没止损）
+                # 记录特定天数的持有收益（如果还没止损）- 扣除交易成本
                 if day in self.config['hold_days']:
-                    ret = (day_price - entry_price) / entry_price * 100
-                    result['returns'][f'{day}d'] = round(ret, 2)
+                    gross_ret = (day_price - entry_price) / entry_price * 100
+                    net_ret = gross_ret - total_cost  # 扣除手续费+滑点
+                    result['returns'][f'{day}d'] = round(net_ret, 2)
+                    result['returns'][f'{day}d_gross'] = round(gross_ret, 2)  # 保留毛收益供对比
             
             # 如果持有期结束还没止损，则以最后一天价格平仓
             if not is_stopped:
@@ -575,24 +591,24 @@ class EnhancedBacktester:
                 if final_price:
                     result['exit_price'] = final_price
                     result['exit_day'] = max_hold_days
-                    
-                    # 补全所有天数的收益（假设一直持有）
-                    # 注意：上面的循环已经记录了持有收益，这里不需要重复
-                    pass
             
-            # 计算最终交易收益（基于退出价格）
-            final_return = (result['exit_price'] - entry_price) / entry_price * 100
-            result['final_return'] = round(final_return, 2)
+            # 计算最终交易收益（基于退出价格）- 扣除交易成本
+            gross_return = (result['exit_price'] - entry_price) / entry_price * 100
+            net_return = gross_return - total_cost  # 扣除手续费+滑点
+            result['final_return'] = round(net_return, 2)
+            result['final_return_gross'] = round(gross_return, 2)  # 保留毛收益供对比
+            result['total_cost'] = total_cost  # 记录总成本
             
             results.append(result)
         
         self.results = results
+        logger.info(f"✅ 交易成本: 手续费 {round_trip_fee}% + 滑点 {slippage}% = 总计 {total_cost}%")
         return results
     
     # ==================== 报告生成 ====================
     
     def generate_report(self) -> Dict:
-        """生成报告 (V2: 基于真实模拟结果)"""
+        """生成报告 (V2: 基于真实模拟结果 + 手续费)"""
         if not self.results:
             return {}
         
@@ -603,14 +619,26 @@ class EnhancedBacktester:
         hit_stop = sum(1 for r in buy_results if r.get('exit_reason') == 'stop_loss')
         avg_drawdown = statistics.mean([r.get('max_drawdown', 0) for r in buy_results]) if buy_results else 0
         
-        # 2. 收益统计 (基于 final_return)
+        # 2. 收益统计 (基于 final_return - 已扣手续费)
         final_returns = [r.get('final_return', 0) for r in buy_results]
+        final_returns_gross = [r.get('final_return_gross', 0) for r in buy_results]
+        
         win_count = sum(1 for r in final_returns if r > 0)
         win_rate = win_count / total_signals * 100 if total_signals > 0 else 0
         avg_return = statistics.mean(final_returns) if final_returns else 0
+        avg_return_gross = statistics.mean(final_returns_gross) if final_returns_gross else 0
         total_return = sum(final_returns)
+        total_return_gross = sum(final_returns_gross)
         
-        # 3. 风险配置回顾
+        # 3. 交易成本影响 (手续费 + 滑点 + 执行延迟)
+        fee_rate = self.config.get('fee_rate', 0.1)
+        slippage = self.config.get('slippage', 0.1)
+        execution_delay = self.config.get('execution_delay', 0)
+        round_trip_fee = fee_rate * 2
+        total_cost_per_trade = round_trip_fee + slippage + execution_delay
+        total_trading_cost = total_cost_per_trade * total_signals  # 总交易成本
+        
+        # 4. 风险配置回顾
         risk_config = self.config.get('risk', {})
         stop_desc = f"{risk_config.get('stop_loss_type')} ({risk_config.get('stop_loss_pct')}%)"
 
@@ -626,11 +654,22 @@ class EnhancedBacktester:
                 'stop_rate': round(hit_stop / total_signals * 100, 1) if total_signals else 0
             },
             'performance': {
-                'avg_return': round(avg_return, 2),
+                'avg_return': round(avg_return, 2),           # 净收益（扣手续费+滑点）
+                'avg_return_gross': round(avg_return_gross, 2), # 毛收益
                 'total_return': round(total_return, 2),
+                'total_return_gross': round(total_return_gross, 2),
                 'win_rate': round(win_rate, 1),
                 'max_return': round(max(final_returns), 2) if final_returns else 0,
                 'min_return': round(min(final_returns), 2) if final_returns else 0,
+            },
+            'costs': {
+                'fee_rate': fee_rate,
+                'round_trip_fee': round_trip_fee,
+                'slippage': slippage,
+                'execution_delay': execution_delay,
+                'total_per_trade': total_cost_per_trade,
+                'total_cost': round(total_trading_cost, 2),
+                'cost_drag_pct': round(total_trading_cost / total_return_gross * 100, 1) if total_return_gross > 0 else 0
             },
             'risk': {
                 'stop_loss_config': stop_desc,
@@ -644,7 +683,7 @@ class EnhancedBacktester:
     def _print_report(self, report: Dict):
         """打印报告"""
         print("\n" + "=" * 70)
-        print("📊 增强版回测报告 (V8 趋势策略 + 动态止损)")
+        print("📊 增强版回测报告 (V8 趋势策略 + 动态止损 + 手续费)")
         print("=" * 70)
         
         print(f"\n📅 回测周期: {report['period']['start']} ~ {report['period']['end']} ({report['period']['days']} 天)")
@@ -655,10 +694,28 @@ class EnhancedBacktester:
         print("💰 收益表现 (模拟持仓)")
         print("-" * 70)
         p = report['performance']
-        print(f"  平均单次收益: {p['avg_return']:+.2f}%")
-        print(f"  累计名义收益: {p['total_return']:+.2f}%")
-        print(f"  胜率       : {p['win_rate']}%")
-        print(f"  最佳/最差   : {p['max_return']:+.2f}% / {p['min_return']:+.2f}%")
+        c = report.get('costs', {})
+        
+        # 显示毛收益 vs 净收益对比
+        print(f"  平均单次收益 (毛): {p.get('avg_return_gross', p['avg_return']):+.2f}%")
+        print(f"  平均单次收益 (净): {p['avg_return']:+.2f}%  ← 扣除交易成本")
+        print(f"  累计名义收益 (毛): {p.get('total_return_gross', p['total_return']):+.2f}%")
+        print(f"  累计名义收益 (净): {p['total_return']:+.2f}%  ← 扣除交易成本")
+        print(f"  胜率            : {p['win_rate']}%")
+        print(f"  最佳/最差        : {p['max_return']:+.2f}% / {p['min_return']:+.2f}%")
+        
+        # 交易成本统计
+        if c:
+            print("\n" + "-" * 70)
+            print("💸 交易成本分析")
+            print("-" * 70)
+            print(f"  双向手续费  : {c.get('round_trip_fee', 0.2)}%")
+            print(f"  滑点成本    : {c.get('slippage', 0.1)}%")
+            print(f"  执行延迟成本: {c.get('execution_delay', 0)}%")
+            print(f"  单次总成本  : {c.get('total_per_trade', 0.3)}%")
+            print(f"  累计成本    : {c.get('total_cost', 0):.2f}%")
+            if c.get('cost_drag_pct', 0) > 0:
+                print(f"  成本拖累    : {c['cost_drag_pct']:.1f}% (占毛收益)")
         
         print("\n" + "-" * 70)
         print("🛡️ 风险分析")
@@ -709,9 +766,129 @@ class EnhancedBacktester:
         
         self.simulate_signals()
         self.calculate_returns()
-        report = self.generate_report()
+        
+        # 检查是否启用样本外验证
+        validate_oos = self.config.get('validate_out_of_sample', False)
+        train_ratio = self.config.get('train_test_split', 0.7)
+        
+        if validate_oos and self.results:
+            report = self._run_train_test_validation(train_ratio)
+        else:
+            report = self.generate_report()
         
         return report
+    
+    def _run_train_test_validation(self, train_ratio: float = 0.7) -> Dict:
+        """执行训练集/测试集分离验证（防过拟合）"""
+        print("\n" + "=" * 70)
+        print("🔬 样本外验证 (Out-of-Sample Validation)")
+        print("=" * 70)
+        
+        if not self.results:
+            return {}
+        
+        # 按日期排序
+        sorted_results = sorted(self.results, key=lambda x: x['date'])
+        
+        # 分割点
+        split_idx = int(len(sorted_results) * train_ratio)
+        train_results = sorted_results[:split_idx]
+        test_results = sorted_results[split_idx:]
+        
+        train_start = train_results[0]['date'] if train_results else 'N/A'
+        train_end = train_results[-1]['date'] if train_results else 'N/A'
+        test_start = test_results[0]['date'] if test_results else 'N/A'
+        test_end = test_results[-1]['date'] if test_results else 'N/A'
+        
+        print(f"\n📊 数据分割:")
+        print(f"  训练集: {len(train_results)} 信号 ({train_start} ~ {train_end})")
+        print(f"  测试集: {len(test_results)} 信号 ({test_start} ~ {test_end})")
+        
+        # 计算训练集统计
+        train_stats = self._calculate_subset_stats(train_results, "训练集 (In-Sample)")
+        
+        # 计算测试集统计
+        test_stats = self._calculate_subset_stats(test_results, "测试集 (Out-of-Sample)")
+        
+        # 对比分析
+        print("\n" + "-" * 70)
+        print("📈 训练集 vs 测试集 对比")
+        print("-" * 70)
+        
+        train_return = train_stats.get('avg_return', 0)
+        test_return = test_stats.get('avg_return', 0)
+        train_winrate = train_stats.get('win_rate', 0)
+        test_winrate = test_stats.get('win_rate', 0)
+        
+        degradation = train_return - test_return
+        winrate_drop = train_winrate - test_winrate
+        
+        print(f"  {'指标':<15} {'训练集':>12} {'测试集':>12} {'差异':>12}")
+        print(f"  {'-'*51}")
+        print(f"  {'平均收益':<15} {train_return:>+11.2f}% {test_return:>+11.2f}% {-degradation:>+11.2f}%")
+        print(f"  {'胜率':<15} {train_winrate:>11.1f}% {test_winrate:>11.1f}% {-winrate_drop:>+11.1f}%")
+        
+        # 过拟合警告
+        if degradation > 2.0:
+            print("\n  ⚠️  警告: 测试集收益显著低于训练集，可能存在过拟合!")
+        elif degradation > 1.0:
+            print("\n  ⚡ 注意: 测试集表现略逊于训练集，建议关注")
+        else:
+            print("\n  ✅ 测试集表现稳健，策略泛化能力良好")
+        
+        if winrate_drop > 10:
+            print("  ⚠️  警告: 胜率下降超过10%，策略可能过度拟合历史数据!")
+        
+        print("\n" + "=" * 70)
+        
+        # 返回完整报告
+        report = self.generate_report()
+        report['validation'] = {
+            'enabled': True,
+            'train_ratio': train_ratio,
+            'train': {
+                'count': len(train_results),
+                'period': f"{train_start} ~ {train_end}",
+                'avg_return': round(train_return, 2),
+                'win_rate': round(train_winrate, 1)
+            },
+            'test': {
+                'count': len(test_results),
+                'period': f"{test_start} ~ {test_end}",
+                'avg_return': round(test_return, 2),
+                'win_rate': round(test_winrate, 1)
+            },
+            'degradation': round(degradation, 2),
+            'winrate_drop': round(winrate_drop, 1),
+            'overfitting_risk': 'HIGH' if degradation > 2.0 else ('MEDIUM' if degradation > 1.0 else 'LOW')
+        }
+        
+        return report
+    
+    def _calculate_subset_stats(self, results: List[Dict], label: str) -> Dict:
+        """计算子集统计"""
+        if not results:
+            return {}
+        
+        final_returns = [r.get('final_return', 0) for r in results]
+        win_count = sum(1 for r in final_returns if r > 0)
+        total = len(results)
+        
+        stats = {
+            'count': total,
+            'avg_return': statistics.mean(final_returns) if final_returns else 0,
+            'total_return': sum(final_returns),
+            'win_rate': win_count / total * 100 if total > 0 else 0,
+            'max_return': max(final_returns) if final_returns else 0,
+            'min_return': min(final_returns) if final_returns else 0,
+        }
+        
+        print(f"\n📊 {label}:")
+        print(f"   信号数: {stats['count']}")
+        print(f"   平均收益: {stats['avg_return']:+.2f}%")
+        print(f"   胜率: {stats['win_rate']:.1f}%")
+        
+        return stats
 
 
 def main():
@@ -734,7 +911,12 @@ def main():
             'hold_days': file_config.get('backtest', {}).get('profit_days', [7, 14, 30]),
             'use_sell_signal': file_config.get('strategy', {}).get('use_sell_signal', False),
             'risk': file_config.get('risk', {'stop_loss_type': 'trailing', 'stop_loss_pct': -15}),
-            'position': file_config.get('position', {})
+            'position': file_config.get('position', {}),
+            'fee_rate': file_config.get('backtest', {}).get('fee_rate', 0.1),  # 手续费配置
+            'slippage': file_config.get('backtest', {}).get('slippage', 0.1),  # 滑点配置
+            'execution_delay': file_config.get('backtest', {}).get('execution_delay', 0),  # 执行延迟成本
+            'train_test_split': file_config.get('backtest', {}).get('train_test_split', 0.7),  # 训练/测试分割比例
+            'validate_out_of_sample': file_config.get('backtest', {}).get('validate_out_of_sample', False),  # 是否启用样本外验证
         }
         
         # Map MA config keys if needed (trend_strategy uses ma_short/ma_long)
