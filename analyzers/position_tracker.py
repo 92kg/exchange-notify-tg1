@@ -161,19 +161,51 @@ class PositionTracker:
         self._save_positions()
         logger.info(f"📥 建仓: {coin} @ ${price:.2f}")
     
-    def update_prices(self, prices: Dict[str, float]) -> List[Dict]:
+    def update_prices(self, prices: Dict[str, float]) -> Dict:
         """
         更新所有持仓价格
-        返回触发止损的列表
+        返回事件字典: {'stopped': [...], 'new_highs': [...], 'stop_line_raised': [...]}
         """
         stopped = []
+        new_highs = []
+        stop_line_raised = []
         
         for coin, price in prices.items():
             if coin not in self.positions:
                 continue
             
             pos = self.positions[coin]
+            old_max = pos.max_price
+            old_stop_line = self.get_stop_line(coin)
+            
             pos.update_price(price)
+            
+            new_max = pos.max_price
+            new_stop_line = self.get_stop_line(coin)
+            
+            # 检测新高突破 (首次超过旧最高价)
+            if new_max > old_max and old_max == pos.entry_price:
+                # 第一次新高，发送提醒
+                new_highs.append({
+                    'coin': coin,
+                    'entry_price': pos.entry_price,
+                    'new_high': new_max,
+                    'return_pct': pos.get_return_pct(),
+                })
+                logger.info(f"🚀 {coin} 创新高: ${new_max:.2f} (+{pos.get_return_pct():.1f}%)")
+            
+            # 检测止损线上移 (涨幅>2%导致止损线上移)
+            if old_stop_line and new_stop_line and new_stop_line > old_stop_line:
+                raise_pct = (new_stop_line - old_stop_line) / old_stop_line * 100
+                if raise_pct >= 2.0:  # 止损线上移超过2%才通知
+                    stop_line_raised.append({
+                        'coin': coin,
+                        'old_stop': old_stop_line,
+                        'new_stop': new_stop_line,
+                        'raise_pct': raise_pct,
+                        'current_price': price,
+                    })
+                    logger.info(f"📈 {coin} 止损线上移: ${old_stop_line:.2f} -> ${new_stop_line:.2f}")
             
             # 检查止损
             stop_triggered = self._check_stop_loss(pos)
@@ -194,7 +226,11 @@ class PositionTracker:
                 logger.warning(f"🛑 {coin} 触发止损: ${pos.entry_price:.2f} -> ${price:.2f} ({pos.get_return_pct():+.1f}%)")
         
         self._save_positions()
-        return stopped
+        return {
+            'stopped': stopped,
+            'new_highs': new_highs,
+            'stop_line_raised': stop_line_raised,
+        }
     
     def _check_stop_loss(self, pos: Position) -> bool:
         """检查是否触发止损"""

@@ -339,7 +339,7 @@ class CryptoSentimentMonitor:
         return data, signals
     
     def _check_stop_loss(self, data: dict):
-        """检查持仓止损"""
+        """检查持仓止损，并处理新高/止损线上移事件"""
         # 收集当前价格
         prices = {}
         for coin, coin_data in data.get('coins', {}).items():
@@ -350,8 +350,39 @@ class CryptoSentimentMonitor:
         if not prices:
             return
         
-        # 检查止损触发
-        stopped = self.position_tracker.update_prices(prices)
+        # 检查止损触发 (现在返回 dict)
+        events = self.position_tracker.update_prices(prices)
+        stopped = events.get('stopped', [])
+        new_highs = events.get('new_highs', [])
+        stop_line_raised = events.get('stop_line_raised', [])
+        
+        # 发送新高提醒
+        if new_highs and self.notifier:
+            for h in new_highs:
+                msg = (
+                    f"🚀 <b>新高突破</b>\n\n"
+                    f"币种: {h['coin']}\n"
+                    f"入场价: ${h['entry_price']:.2f}\n"
+                    f"新高价: ${h['new_high']:.2f}\n"
+                    f"收益: {h['return_pct']:+.1f}%\n"
+                )
+                self.notifier.send(msg)
+                self.logger.info(f"🚀 已发送新高通知: {h['coin']}")
+        
+        # 发送止损线上移提醒
+        if stop_line_raised and self.notifier:
+            for r in stop_line_raised:
+                msg = (
+                    f"📈 <b>止损线上移</b>\n\n"
+                    f"币种: {r['coin']}\n"
+                    f"旧止损线: ${r['old_stop']:.2f}\n"
+                    f"新止损线: ${r['new_stop']:.2f}\n"
+                    f"上移幅度: +{r['raise_pct']:.1f}%\n"
+                    f"当前价格: ${r['current_price']:.2f}\n"
+                    f"💰 利润已锁定！"
+                )
+                self.notifier.send(msg)
+                self.logger.info(f"📈 已发送止损线上移通知: {r['coin']}")
         
         # 发送止损通知
         if stopped and self.notifier:
@@ -372,7 +403,6 @@ class CryptoSentimentMonitor:
                     if balance > 0.00001:  # 最小精度过滤
                         self.logger.info(f"🛑 正在执行自动止损: {s['coin']}, 数量: {balance}")
                         # 市价全平
-                        # 注意：OKX市价卖出一律传 sz=数量 (币对应单位)
                         order = self.exchange.create_order(
                             symbol=s['coin'], 
                             side='sell', 
@@ -602,25 +632,50 @@ class CryptoSentimentMonitor:
                 self._last_daily_report_date = current_date
 
     def _send_daily_report(self):
-        """发送每日状态报告"""
+        """发送每日持仓报告"""
         if not self.notifier:
             return
             
         try:
-            # 获取资金账户余额 (示例，仅BTC)
-            btc_bal = self.exchange.get_balance('BTC') if hasattr(self.exchange, 'get_balance') else 0
+            # 获取账户余额
             usdt_bal = self.exchange.get_balance('USDT') if hasattr(self.exchange, 'get_balance') else 0
             
+            # 获取持仓状态
+            status = self.position_tracker.get_status()
+            positions = status.get('positions', {})
+            
             msg = (
-                f"📅 <b>每日状态报告</b>\n"
+                f"📊 <b>每日持仓报告</b>\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-                f"状态: ✅ 运行正常\n"
-                f"账户余额:\n"
-                f"BTC: {btc_bal:.4f}\n"
-                f"USDT: {usdt_bal:.2f}\n"
+                f"状态: ✅ 运行正常\n\n"
             )
+            
+            if positions:
+                msg += "<b>📈 当前持仓:</b>\n"
+                total_pnl = 0
+                for coin, pos in positions.items():
+                    entry = pos.get('entry_price', 0)
+                    current = pos.get('current_price', 0)
+                    return_pct = pos.get('return_pct', 0) if 'return_pct' in pos else ((current - entry) / entry * 100 if entry else 0)
+                    stop_line = self.position_tracker.get_stop_line(coin)
+                    safety_pct = ((current - stop_line) / current * 100) if stop_line and current else 0
+                    
+                    msg += (
+                        f"\n• <b>{coin}</b>\n"
+                        f"  入场: ${entry:,.2f} | 现价: ${current:,.2f}\n"
+                        f"  收益: {return_pct:+.1f}%\n"
+                        f"  止损线: ${stop_line:,.2f} (安全距离 {safety_pct:.1f}%)\n"
+                    )
+                    total_pnl += return_pct
+                
+                msg += f"\n<b>总浮盈: {total_pnl:+.1f}%</b>\n"
+            else:
+                msg += "📭 当前无持仓\n"
+            
+            msg += f"\n💰 USDT余额: ${usdt_bal:,.2f}"
+            
             self.notifier.send(msg)
-            self.logger.info("已发送每日报告")
+            self.logger.info("已发送每日持仓报告")
         except Exception as e:
             self.logger.error(f"发送每日报告失败: {e}")
 
