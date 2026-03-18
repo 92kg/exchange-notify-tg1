@@ -64,30 +64,43 @@ install_python38() {
     echo ""
 }
 
-# 检查 Python 3.8 是否已安装
+# 检查可用的 Python 3 版本
 PYTHON_CMD=""
-if command -v python3.8 &> /dev/null; then
-    PYTHON_CMD="python3.8"
-    echo "✅ 检测到 Python 3.8 已安装"
-elif command -v /usr/local/bin/python3.8 &> /dev/null; then
-    PYTHON_CMD="/usr/local/bin/python3.8"
-    echo "✅ 检测到 Python 3.8 已安装"
-else
-    echo "⚠️  未检测到 Python 3.8"
+python_versions=("python3.10" "python3.8" "python3" "python")
+
+echo "🔍 正在搜索可用的 Python 版本..."
+
+for cmd in "${python_versions[@]}"; do
+    if command -v "$cmd" &> /dev/null; then
+        # 检查版本是否 >= 3.8
+        version=$($cmd -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
+        major=$(echo $version | cut -d. -f1)
+        minor=$(echo $version | cut -d. -f2)
+        
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 8 ]; then
+            PYTHON_CMD="$cmd"
+            echo "✅ 选中 Python 解释器: $cmd (版本: $version)"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo "⚠️  未在系统中检测到合适的 Python 3.8+ 环境"
     echo ""
-    read -p "是否现在安装 Python 3.8？（不会影响 Python 2.7 和宝塔）[y/N]: " -n 1 -r
+    read -p "是否尝试编译安装 Python 3.8？(仅限 CentOS/Ubuntu) [y/N]: " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         install_python38
         PYTHON_CMD="/usr/local/bin/python3.8"
     else
-        echo "❌ 请先安装 Python 3.8 后再运行此脚本"
+        echo "❌ 请先安装 Python 3.8 或更高版本后再运行此脚本"
         exit 1
     fi
 fi
 
 VERSION=$($PYTHON_CMD --version 2>&1)
-echo "使用 Python: $VERSION"
+echo "🚀 准备使用 $VERSION 初始化环境"
 echo ""
 
 # ============================================================

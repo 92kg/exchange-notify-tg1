@@ -246,6 +246,12 @@ class PositionTracker:
             ret = pos.get_return_pct()
             return ret <= self.initial_stop
     
+    def get_position(self, coin: str) -> Optional[dict]:
+        """获取特定币种的持仓信息"""
+        if coin in self.positions:
+            return self.positions[coin].to_dict()
+        return None
+
     def get_stop_line(self, coin: str) -> Optional[float]:
         """获取某币种当前止损线价格"""
         if coin not in self.positions:
