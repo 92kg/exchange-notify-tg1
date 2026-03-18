@@ -108,6 +108,13 @@ echo ""
 # ============================================================
 
 echo "[1/3] 创建虚拟环境..."
+if ! $PYTHON_CMD -m venv --help &> /dev/null; then
+    echo "❌ 错误: 检测到 $PYTHON_CMD 缺少 venv 模块。"
+    echo "在 Debian/Ubuntu 系统上，请运行以下命令安装:"
+    echo "  sudo apt update && sudo apt install -y ${PYTHON_CMD}-venv"
+    echo "安装后请重新运行此脚本。"
+    exit 1
+fi
 $PYTHON_CMD -m venv venv
 
 echo "[2/3] 安装依赖..."
