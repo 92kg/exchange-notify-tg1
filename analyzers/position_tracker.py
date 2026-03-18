@@ -276,3 +276,56 @@ class PositionTracker:
             del self.positions[coin]
             self._save_positions()
             logger.info(f"📤 移除持仓: {coin}")
+
+    def sync_positions(self, exchange_positions: List[Dict]):
+        """
+        与交易所真实仓位对账
+        :param exchange_positions: 交易所返回的持仓列表
+        """
+        logger.info("🔄 开始持仓对账...")
+        
+        # 1. 将交易所仓位转为 map 方便查找
+        ex_map = {p['symbol']: p for p in exchange_positions}
+        
+        # 2. 检查本地记录，如果交易所已无此仓位，则本地也移除
+        local_coins = list(self.positions.keys())
+        removed_count = 0
+        for coin in local_coins:
+            if coin not in ex_map:
+                logger.warning(f"⚠️ 对账差异: 发现本地记录 {coin} 但交易所无持仓，已自动同步移除")
+                del self.positions[coin]
+                removed_count += 1
+        
+        # 3. 检查交易所仓位，更新本地数据或新增
+        added_count = 0
+        synced_count = 0
+        for coin, ex_pos in ex_map.items():
+            if coin in self.positions:
+                # 已有持仓，同步数量和价格（以此价格为基准？）
+                # 通常我们保留本地的 entry_price 除非差异过大
+                pos = self.positions[coin]
+                if abs(pos.amount - abs(ex_pos['size'])) > 0.00001:
+                    logger.info(f"📊 对账更新: {coin} 数量差异 {pos.amount} -> {abs(ex_pos['size'])}")
+                    pos.amount = abs(ex_pos['size'])
+                    synced_count += 1
+            else:
+                # 本地缺失，交易所持有：创建新记录
+                logger.info(f"➕ 对账发现新仓位: {coin} @ ${ex_pos['entry_price']:.2f}")
+                entry_price = ex_pos['entry_price']
+                new_pos = Position(
+                    coin=coin,
+                    entry_price=entry_price,
+                    entry_date=datetime.now().strftime('%Y-%m-%d'),
+                    signal_reasons=["对账导入"],
+                    amount=abs(ex_pos['size'])
+                )
+                new_pos.current_price = ex_pos.get('current_price', entry_price)
+                new_pos.max_price = max(entry_price, new_pos.current_price)
+                self.positions[coin] = new_pos
+                added_count += 1
+        
+        if added_count > 0 or removed_count > 0 or synced_count > 0:
+            self._save_positions()
+            logger.info(f"✅ 对账完成: 新增 {added_count}, 移除 {removed_count}, 同步 {synced_count}")
+        else:
+            logger.info("✅ 对账完成: 本地与交易所数据完全一致")

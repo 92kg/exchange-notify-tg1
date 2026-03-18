@@ -56,6 +56,15 @@ class CryptoSentimentMonitor:
             risk_config = self.config.get('risk', {})
             self.logger.info(f"✅ 持仓追踪: {risk_config.get('stop_loss_type', 'fixed')} 止损 {risk_config.get('stop_loss_pct', -15)}%")
             
+            # --- 启动时持仓对账 ---
+            try:
+                real_positions = self.exchange.get_positions()
+                if real_positions is not None:
+                    self.position_tracker.sync_positions(real_positions)
+            except Exception as e:
+                self.logger.error(f"⚠️ 启动对账失败: {e}")
+            # --------------------
+            
             # 通知器
             if self.config['telegram']['enabled']:
                 self.notifier = TelegramNotifier(
@@ -260,6 +269,7 @@ class CryptoSentimentMonitor:
                 self.logger.info(f"✅ 生成了 {len(signals)} 个信号")
                 
                 # 保存信号并处理持仓逻辑
+                notifiable_signals = []
                 for signal in signals:
                     try:
                         # 检查是否为加仓机会
@@ -289,6 +299,7 @@ class CryptoSentimentMonitor:
                                     continue
 
                         self.db.save_signal(signal, data)
+                        notifiable_signals.append(signal)
                         log_icon = "➕" if is_add else " "
                         self.logger.info(
                             f"{log_icon} {signal['coin']} {signal['type']} "
@@ -301,29 +312,18 @@ class CryptoSentimentMonitor:
                             price = data['coins'][signal['coin']].get('price')
                             if price:
                                 # add_position 内部会自动处理加仓逻辑（更新均价或仅记录）
-                                # 目前简单处理：如果是新开仓则添加，如果是加仓也调用add_position刷新止损基准或不做操作
-                                # 考虑到 PositionTracker 当前逻辑可能不支持复杂仓位合并，我们暂时只更新追踪
-                                if is_add:
-                                    self.logger.info(f"➕ {signal['coin']} 触发加仓信号")
-                                    self.position_tracker.add_position(
-                                        signal['coin'], 
-                                        price, 
-                                        signal.get('reasons', []),
-                                        amount=1.0
-                                    )
-                                else:
-                                    self.position_tracker.add_position(
-                                        signal['coin'], 
-                                        price, 
-                                        signal.get('reasons', []),
-                                        amount=1.0
-                                    )
+                                self.position_tracker.add_position(
+                                    signal['coin'], 
+                                    price, 
+                                    signal.get('reasons', []),
+                                    amount=1.0
+                                )
                     except Exception as e:
                         self.logger.error(f"保存信号失败: {e}")
                 
                 # 发送Telegram通知
-                if self.notifier:
-                    message = self._format_message(data, signals)
+                if self.notifier and notifiable_signals:
+                    message = self._format_message(data, notifiable_signals)
                     if self.notifier.send(message):
                         self.logger.info("✅ 已发送Telegram通知")
                     else:
