@@ -640,15 +640,22 @@ class CryptoSentimentMonitor:
             # 获取账户余额
             usdt_bal = self.exchange.get_balance('USDT') if hasattr(self.exchange, 'get_balance') else 0
             
+            # 获取恐慌贪婪指数
+            fg_data = self.sentiment_analyzer.get_fear_greed_index()
+            
             # 获取持仓状态
             status = self.position_tracker.get_status()
             positions = status.get('positions', {})
             
             msg = (
-                f"📊 <b>每日持仓报告</b>\n"
+                f"📊 <b>每日系统报告</b>\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                 f"状态: ✅ 运行正常\n\n"
             )
+            
+            if fg_data:
+                msg += f"<b>📈 市场情绪</b>\n"
+                msg += f"恐慌指数: {fg_data['value']} ({fg_data['classification']})\n\n"
             
             if positions:
                 msg += "<b>📈 当前持仓:</b>\n"
